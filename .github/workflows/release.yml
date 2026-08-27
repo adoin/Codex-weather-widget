@@ -1,0 +1,74 @@
+name: Release Windows x64
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches Cargo version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = $metadata.packages[0].version
+          $expectedTag = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Tag '$env:GITHUB_REF_NAME' does not match Cargo version '$version'. Expected '$expectedTag'."
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Test
+        run: cargo test --all-targets --locked
+
+      - name: Build Windows x64 release
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Package portable archive
+        shell: pwsh
+        run: |
+          $archiveName = "codex-weather-widget-v$env:RELEASE_VERSION-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP $archiveName
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Path $stage, $dist -Force | Out-Null
+          Copy-Item -LiteralPath "target\x86_64-pc-windows-msvc\release\codex-calendar.exe" -Destination (Join-Path $stage "codex-weather-widget.exe")
+          Copy-Item -LiteralPath "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "config.example.json" -Destination $stage
+          $archive = Join-Path $dist "$archiveName.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName.zip" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Keep the latest three release workflow runs
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $endpoint = "repos/$env:GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=completed&per_page=100"
+          $completedRunIds = @(gh api --paginate $endpoint --jq '.workflow_runs[].id')
+          $completedRunIds | Select-Object -Skip 2 | ForEach-Object {
+            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/actions/runs/$_"
+          }
