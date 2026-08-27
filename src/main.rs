@@ -7,6 +7,7 @@ use std::{
 };
 
 use codex_calendar::{
+    autostart,
     config::Config,
     i18n::{Language, Text, tr},
     live::fetch_live_usage,
@@ -26,6 +27,11 @@ use tray_icon::{
 
 fn main() -> eframe::Result {
     let config = Arc::new(RwLock::new(Config::load()));
+    if config.read().auto_start
+        && let Err(error) = autostart::configure(true)
+    {
+        eprintln!("failed to synchronize startup task: {error:#}");
+    }
     let port = config.read().port;
     if server::notify_existing(port) {
         return Ok(());

@@ -9,6 +9,7 @@
 - 读取 `~/.codex/sessions/**/*.jsonl`，统计今日 Token、调用数、会话数和当前上下文；并按项目与本地日期汇总近 7 日 Token。累计计数使用差分，子代理重放的父任务历史只作为基线，不重复计入。
 - 使用 Codex 本地登录凭据请求官方客户端使用的 `wham/usage` 接口；失败时自动回退到最近会话里的 `rate_limits`。
 - Windows 原生圆角裁剪、系统桌面吸附、托盘、单实例唤醒、Codex/ChatGPT 进程显隐跟随；也可切回普通置顶窗口。
+- 设置中可启用“开机启动”；Windows 会为当前用户创建延迟 10 秒的登录计划任务，并在安装路径变化后自动同步。
 - 雨、雷雨、雪、晴、多云、阴、雾七组天气场景，每组 3 张本地背景；雨天使用玻璃雨滴动画，雷雨额外模拟远处闪电的明暗变化，雪天使用多层雪花动画。保存城市或地区后，场景会跟随 Open-Meteo 的当日天气预报。
 - 背景图片透明度可在设置中调节并持久化；照片与毛玻璃采样同步衰减，底层直接透出桌面。
 - Windows 桌面吸附模式支持系统壁纸采样式毛玻璃：后台将当前壁纸缩小并预模糊，按挂件在当前显示器中的位置裁切；拖动期间暂时使用真实透明背景，松手后恢复，避免模糊纹理追赶。
@@ -44,14 +45,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 cargo build --release
 ```
 
-Windows 也可以运行 `pwsh -File scripts/install-dev.ps1`：它会构建 release 版本、安装到当前用户目录、注册开机启动，并安装 `/quota` 技能，不需要管理员权限。
+Windows 也可以运行 `pwsh -File scripts/install-dev.ps1`：它会构建 release 版本、安装到当前用户目录并安装 `/quota` 技能，不需要管理员权限。开机启动由挂件设置中的开关控制。
+
+## 安装
+
+从 [GitHub Releases](https://github.com/adoin/Codex-weather-widget/releases) 下载 `CodexWeatherWidgetSetup-<版本>.exe` 并运行。安装器不需要管理员权限，会安装到当前用户的 `%LOCALAPPDATA%\Programs\CodexWeatherWidget`，同时安装 `/quota` 技能和开始菜单快捷方式。是否随 Windows 登录启动由挂件设置中的“开机启动”独立控制。
 
 ## 交互
 
 | 操作 | 结果 |
 | --- | --- |
 | 点击上半部分的背景照片 | 切换同一天气主题的下一张照片 |
-| 点击 `设置` | 设置语言、天气地址、桌面吸附、跟随和减少动态 |
+| 点击 `设置` | 设置语言、天气地址、桌面吸附、开机启动、跟随和减少动态 |
 | 点击右上角锁图标 | 在“锁定位置”和“解锁可移动”之间切换 |
 | 解锁后拖动卡片顶部 | 移动挂件；停止后位置自动保存到本地配置 |
 | 点击额度卡右上角统计图标 | 在原卡片区域查看项目 Token 占比和近 7 日每日总 Token |
@@ -100,13 +105,13 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/panel/toggle
 
 ## 构建与发布
 
-`.github/workflows/ci.yml` 在 Windows/macOS 上执行格式检查、编译和测试。推送与 `Cargo.toml` 版本一致的 `v*` 标签时，`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，生成 Windows x64 便携压缩包与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只保留最近 3 次运行记录；正式 Release 文件不受该清理影响。
+`.github/workflows/ci.yml` 在 Windows/macOS 上执行格式检查、编译和测试。推送与 `Cargo.toml` 版本一致的 `v*` 标签时，`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，通过 Inno Setup 生成 Windows x64 安装程序与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只使用 3 个可复用 Action，并只保留最近 3 次运行记录；正式 Release 文件不受该清理影响。
 
-1.0.0 的发布标签为：
+1.0.1 的发布标签为：
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 ## 致谢与许可

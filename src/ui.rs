@@ -172,6 +172,7 @@ pub struct CalendarApp {
     location_search_pending: Option<String>,
     location_candidates: Vec<LocationCandidate>,
     location_search_error: Option<String>,
+    autostart_error: Option<String>,
     native_attached_state: Option<bool>,
     native_region_size: Option<(u32, u32)>,
     native_drag_origin: Option<crate::desktop::NativeDragOrigin>,
@@ -252,6 +253,7 @@ impl CalendarApp {
             location_search_pending: None,
             location_candidates: Vec::new(),
             location_search_error: None,
+            autostart_error: None,
             native_attached_state: None,
             native_region_size: None,
             native_drag_origin: None,
@@ -1132,6 +1134,7 @@ impl CalendarApp {
             cfg.desktop_attached,
             cfg.background_opacity,
             cfg.desktop_glass,
+            cfg.auto_start,
         );
         let language_before = cfg.language.clone();
         ui.label(
@@ -1311,7 +1314,33 @@ impl CalendarApp {
                     egui::Checkbox::new(&mut cfg.always_on_top, tr(language, Text::AlwaysOnTop)),
                 );
                 ui.end_row();
+
+                if cfg!(target_os = "windows") {
+                    let mut auto_start = cfg.auto_start;
+                    if ui
+                        .checkbox(&mut auto_start, tr(language, Text::AutoStart))
+                        .changed()
+                    {
+                        match crate::autostart::configure(auto_start) {
+                            Ok(()) => {
+                                cfg.auto_start = auto_start;
+                                self.autostart_error = None;
+                            }
+                            Err(error) => {
+                                self.autostart_error = Some(format!(
+                                    "{}: {error}",
+                                    tr(language, Text::AutoStartFailed)
+                                ));
+                            }
+                        }
+                    }
+                    ui.end_row();
+                }
             });
+        if let Some(error) = self.autostart_error.as_deref() {
+            ui.add_space(4.0);
+            ui.label(RichText::new(error).size(10.0).color(TERRACOTTA));
+        }
         let after = (
             cfg.follow_codex,
             cfg.always_on_top,
@@ -1320,6 +1349,7 @@ impl CalendarApp {
             cfg.desktop_attached,
             cfg.background_opacity,
             cfg.desktop_glass,
+            cfg.auto_start,
         );
         let current_cfg = self.config.read();
         let address_changed = cfg.weather_location != current_cfg.weather_location

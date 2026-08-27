@@ -1,6 +1,6 @@
 [package]
 name = "codex-calendar"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "A calm desktop calendar for live Codex quota and activity"
 license = "MIT"
@@ -38,6 +38,9 @@ windows = { version = "0.62.2", features = [
 
 [dev-dependencies]
 tempfile = "3.23"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
 
 [profile.release]
 lto = "thin"

@@ -40,19 +40,25 @@ jobs:
       - name: Build Windows x64 release
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
-      - name: Package portable archive
+      - name: Build Windows installer
         shell: pwsh
         run: |
-          $archiveName = "codex-weather-widget-v$env:RELEASE_VERSION-windows-x86_64"
-          $stage = Join-Path $env:RUNNER_TEMP $archiveName
+          choco install innosetup --yes --no-progress
+          $sourceDir = (Resolve-Path "target\x86_64-pc-windows-msvc\release").Path
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
-          New-Item -ItemType Directory -Path $stage, $dist -Force | Out-Null
-          Copy-Item -LiteralPath "target\x86_64-pc-windows-msvc\release\codex-calendar.exe" -Destination (Join-Path $stage "codex-weather-widget.exe")
-          Copy-Item -LiteralPath "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "config.example.json" -Destination $stage
-          $archive = Join-Path $dist "$archiveName.zip"
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -CompressionLevel Optimal
-          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $archiveName.zip" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          & $iscc "installer\windows\codex-weather-widget.iss" "/DAppVersion=$env:RELEASE_VERSION" "/DSourceDir=$sourceDir" "/DOutputDir=$dist"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+          $installerName = "CodexWeatherWidgetSetup-$env:RELEASE_VERSION.exe"
+          $installer = Join-Path $dist $installerName
+          if (-not (Test-Path -LiteralPath $installer)) {
+            throw "Installer was not generated: $installer"
+          }
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $installerName" | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

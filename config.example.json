@@ -21,6 +21,7 @@
   "weatherRefreshMinutes": 30,
   "desktopAttached": true,
   "positionLocked": false,
+  "autoStart": false,
   "language": "zh-CN",
   "windowX": null,
   "windowY": null,
