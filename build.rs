@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icons/codex-weather-widget.ico");
+    println!("cargo:rerun-if-changed=assets/icons/codex-weather-widget-32.png");
 
     #[cfg(target_os = "windows")]
     {

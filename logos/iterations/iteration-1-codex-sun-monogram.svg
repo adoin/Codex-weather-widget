@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Codex sun monogram</title>
+  <desc id="desc">A circular gradient C surrounds a sun-shaped O. Lowercase d, e, and x share one vertical axis and stroke weight, with the x growing from the lower C terminal.</desc>
+  <defs>
+    <linearGradient id="cdex-gradient" x1="105" y1="115" x2="430" y2="395" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF8A3D" />
+      <stop offset="0.48" stop-color="#4F7CFF" />
+      <stop offset="1" stop-color="#A855F7" />
+    </linearGradient>
+  </defs>
+  <g id="icon" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- True circular C: thin enough to stay graceful and leave room for the letter column. -->
+    <path id="codex-c-x-stroke" d="M351 119A178 178 0 1 0 351 381L424 310" stroke="url(#cdex-gradient)" stroke-width="5" />
+
+    <!-- O becomes a compact sun: the ring survives at favicon size. -->
+    <g id="weather-o" stroke="#F5AE28">
+      <circle cx="211" cy="246" r="47" stroke-width="20" />
+      <path d="M211 170V146M211 346V322M135 246H111M311 246H287M157 192L140 175M282 317L265 300M157 300L140 317M282 175L265 192" stroke-width="12" />
+    </g>
+
+    <!-- Exact left d and right e silhouettes extracted independently from the supplied bitmap. -->
+    <g id="de" fill="#8F60F9" stroke="none" fill-rule="evenodd">
+      <path id="reference-d" transform="translate(357 111) scale(1.45)" d="M35.5 1L37 1.5L37 62.5L39 64.5L35.5 65L34 62.5L33.5 57L28.5 63L25.5 65L16.5 66L10.5 64L5 58.5L1 47.5L1 35.5L5 25.5L9.5 21L12.5 19L21.5 18L26.5 20L31 23.5L33.5 28L34 6.5L32 2.5L35.5 1ZM16 20L12 22L8 26L4 35L4 50L8 59L12 62L19 65L27 63Q32 59 34 53L34 32L31 26L27 21L24 20L16 20Z" />
+      <path id="reference-e" transform="translate(292.2 199.9) scale(1.45)" d="M61.5 18L68.5 18L71.5 19Q78.33 21.67 82 27.5L86 37.5L86 41.5L46 42.5L48 52.5Q50.33 58.67 55.5 62L59.5 64Q64.25 62.75 65.5 65Q66.75 62.75 71.5 64L75.5 62L80.5 57L81 58.5Q75.98 66.97 61.5 66L53.5 63L48 57.5L44 48.5L44 35.5L46 29.5L52.5 22L61.5 18ZM61 20L56 22Q50 25 48 32L47 35L47 40L47 41L83 41L83 36L79 27Q76 22 71 20L61 20Z" />
+    </g>
+
+    <!-- The / stroke is already part of C above; this crossing stroke completes X. -->
+    <g id="x" stroke="url(#cdex-gradient)" stroke-width="5">
+      <path d="M370 317L427 380" />
+    </g>
+  </g>
+</svg>

@@ -3,6 +3,24 @@ use std::{fs, path::PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WeatherProvider {
+    #[default]
+    Auto,
+    OpenMeteo,
+    QWeather,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WeatherIconTheme {
+    #[default]
+    Crystal,
+    Duotone,
+    Neon,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Config {
@@ -21,6 +39,9 @@ pub struct Config {
     pub background: usize,
     pub background_opacity: f32,
     pub desktop_glass: bool,
+    pub weather_provider: WeatherProvider,
+    pub weather_icon_theme: WeatherIconTheme,
+    pub qweather_api_host: String,
     pub weather_location: String,
     pub weather_display_name: Option<String>,
     pub weather_latitude: Option<f64>,
@@ -54,6 +75,9 @@ impl Default for Config {
             background: 0,
             background_opacity: 1.0,
             desktop_glass: cfg!(target_os = "windows"),
+            weather_provider: WeatherProvider::Auto,
+            weather_icon_theme: WeatherIconTheme::Crystal,
+            qweather_api_host: String::new(),
             weather_location: String::new(),
             weather_display_name: None,
             weather_latitude: None,

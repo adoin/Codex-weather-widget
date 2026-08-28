@@ -32,5 +32,27 @@ fn application_icon_exists_and_is_an_icon_container() {
     )
     .expect("read application icon");
     assert!(icon.len() > 1_000);
-    assert_eq!(&icon[..6], &[0, 0, 1, 0, 1, 0]);
+    assert_eq!(&icon[..4], &[0, 0, 1, 0]);
+
+    let frame_count = u16::from_le_bytes([icon[4], icon[5]]) as usize;
+    assert_eq!(frame_count, 7);
+
+    let sizes = (0..frame_count)
+        .map(|index| {
+            let entry = 6 + index * 16;
+            let width = match icon[entry] {
+                0 => 256,
+                value => usize::from(value),
+            };
+            let height = match icon[entry + 1] {
+                0 => 256,
+                value => usize::from(value),
+            };
+            let bit_depth = u16::from_le_bytes([icon[entry + 6], icon[entry + 7]]);
+            assert_eq!(width, height);
+            assert_eq!(bit_depth, 32);
+            width
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sizes, [256, 128, 64, 48, 32, 24, 16]);
 }

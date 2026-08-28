@@ -9,12 +9,13 @@ use std::{
 use codex_calendar::{
     autostart,
     config::Config,
+    credentials,
     i18n::{Language, Text, tr},
     live::fetch_live_usage,
     model::{AppCommand, UsageSnapshot},
     server,
-    ui::CalendarApp,
-    usage::{collect_usage_from, discover_codex_home},
+    ui::{CalendarApp, install_fonts},
+    usage::{UsageCollector, discover_codex_home},
     watcher,
     weather::{self, WeatherState},
 };
@@ -88,6 +89,7 @@ fn main() -> eframe::Result {
         "Codex Calendar",
         native_options,
         Box::new(move |creation| {
+            install_fonts(&creation.egui_ctx);
             creation
                 .egui_ctx
                 .set_pixels_per_point(creation.egui_ctx.pixels_per_point().max(1.0));
@@ -120,12 +122,16 @@ fn start_weather_worker(config: Arc<RwLock<Config>>, state: Arc<RwLock<WeatherSt
                     }
                     active_location = None;
                 } else {
+                    let qweather_api_key = credentials::load_qweather_api_key().unwrap_or_default();
                     let location_key = (
                         location.clone(),
                         cfg.weather_display_name.clone(),
                         cfg.weather_latitude.map(f64::to_bits),
                         cfg.weather_longitude.map(f64::to_bits),
                         language.code(),
+                        cfg.weather_provider,
+                        cfg.qweather_api_host.clone(),
+                        qweather_api_key.clone(),
                     );
                     if active_location.as_ref() != Some(&location_key)
                         || last_fetch.elapsed()
@@ -137,12 +143,18 @@ fn start_weather_worker(config: Arc<RwLock<Config>>, state: Arc<RwLock<WeatherSt
                             cfg.weather_longitude,
                         ) {
                             (Some(display_name), Some(latitude), Some(longitude)) => {
-                                weather::fetch_coordinates(
+                                let services = weather::WeatherServices::new(
+                                    cfg.weather_provider,
+                                    cfg.qweather_api_host.clone(),
+                                    qweather_api_key,
+                                );
+                                weather::fetch_coordinates_with_services(
                                     &location,
                                     display_name,
                                     latitude,
                                     longitude,
                                     language,
+                                    &services,
                                 )
                             }
                             _ => WeatherState {
@@ -170,6 +182,7 @@ fn start_usage_worker(config: Arc<RwLock<Config>>, snapshot: Arc<RwLock<UsageSna
         .spawn(move || {
             let initial_config = config.read().clone();
             let codex_home = discover_codex_home(initial_config.codex_home.as_deref());
+            let mut usage_collector = UsageCollector::new(codex_home.clone());
             let mut live_plan = None;
             let mut live_error = None;
             let mut last_live = Instant::now()
@@ -196,8 +209,7 @@ fn start_usage_worker(config: Arc<RwLock<Config>>, snapshot: Arc<RwLock<UsageSna
                     }
                     last_live = Instant::now();
                 }
-                let mut next =
-                    collect_usage_from(&codex_home, cfg.daily_budget_tokens, live_plan.clone());
+                let mut next = usage_collector.collect(cfg.daily_budget_tokens, live_plan.clone());
                 if next.status_message.is_none() {
                     next.status_message.clone_from(&live_error);
                 }
@@ -235,7 +247,7 @@ fn setup_tray(commands: mpsc::Sender<AppCommand>, language: Language) -> anyhow:
         }
     }));
 
-    let icon = calendar_icon()?;
+    let icon = application_icon()?;
     TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip(tr(language, Text::TrayTooltip))
@@ -244,32 +256,12 @@ fn setup_tray(commands: mpsc::Sender<AppCommand>, language: Language) -> anyhow:
         .map_err(Into::into)
 }
 
-fn calendar_icon() -> anyhow::Result<Icon> {
-    let size = 32_u32;
-    let mut rgba = vec![0_u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - 15.5;
-            let dy = y as f32 - 15.5;
-            let rounded = dx.abs() <= 13.0
-                && dy.abs() <= 13.0
-                && (dx.abs() <= 10.5
-                    || dy.abs() <= 10.5
-                    || (dx.abs() - 10.5).powi(2) + (dy.abs() - 10.5).powi(2) <= 6.25);
-            let offset = ((y * size + x) * 4) as usize;
-            if rounded {
-                let header = y < 11;
-                let color = if header {
-                    [78, 105, 84, 255]
-                } else {
-                    [246, 243, 234, 255]
-                };
-                rgba[offset..offset + 4].copy_from_slice(&color);
-                if !header && (x == 10 || x == 16 || x == 22) && (y == 17 || y == 23) {
-                    rgba[offset..offset + 4].copy_from_slice(&[184, 101, 72, 255]);
-                }
-            }
-        }
-    }
-    Icon::from_rgba(rgba, size, size).map_err(Into::into)
+fn application_icon() -> anyhow::Result<Icon> {
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../assets/icons/codex-weather-widget-32.png"),
+        image::ImageFormat::Png,
+    )?
+    .into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).map_err(Into::into)
 }

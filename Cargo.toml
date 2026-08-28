@@ -1,6 +1,6 @@
 [package]
 name = "codex-calendar"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
 description = "A calm desktop calendar for live Codex quota and activity"
 license = "MIT"
@@ -17,7 +17,7 @@ egui_extras = { version = "0.36.1", features = ["svg"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 parking_lot = "0.12"
 rand = "0.9"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls", "system-proxy"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "gzip", "json", "query", "rustls", "system-proxy"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.39.6"
@@ -27,6 +27,7 @@ tray-icon = "0.24.2"
 walkdir = "2.5"
 
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 raw-window-handle = "0.6"
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
@@ -35,6 +36,9 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 
 [dev-dependencies]
 tempfile = "3.23"

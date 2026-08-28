@@ -53,6 +53,11 @@ License](https://creativecommons.org/licenses/by/4.0/). The bundled copies use
 condition-specific fill colours for legibility on the widget's dark forecast
 strip. Attribution and the license link are also included in that directory.
 
+The generated SVG files under `assets/weather-themes/` reuse geometry from
+[QWeather Icons 1.8.0](https://github.com/qwd/Icons), copyright QWeather,
+under its MIT license. The local generation script changes only presentation
+(palette, gradient and glow) and retains a copy of the upstream license.
+
 ## Software dependencies
 
 Runtime and development dependencies are declared in `Cargo.toml` and resolved in

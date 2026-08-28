@@ -1,78 +1,84 @@
 $ErrorActionPreference = "Stop"
 
-Add-Type -AssemblyName System.Drawing
-
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$svgPath = Join-Path $repoRoot "logos\iterations\iteration-1-codex-sun-monogram.svg"
 $iconDir = Join-Path $repoRoot "assets\icons"
 $iconPath = Join-Path $iconDir "codex-weather-widget.ico"
-$pngPath = Join-Path ([IO.Path]::GetTempPath()) ("codex-weather-widget-{0}.png" -f [Guid]::NewGuid())
-New-Item -ItemType Directory -Force -Path $iconDir | Out-Null
+$trayPngPath = Join-Path $iconDir "codex-weather-widget-32.png"
+$previewPngPath = Join-Path $iconDir "codex-weather-widget-256.png"
+$renderer = Join-Path $PSScriptRoot "render-icon.cjs"
+$workDir = Join-Path ([IO.Path]::GetTempPath()) ("codex-weather-icon-{0}" -f [Guid]::NewGuid())
+$sizes = @(256, 128, 64, 48, 32, 24, 16)
 
-function New-RoundedRectanglePath([System.Drawing.RectangleF]$rectangle, [float]$radius) {
-  $diameter = $radius * 2
-  $path = [System.Drawing.Drawing2D.GraphicsPath]::new()
-  $path.AddArc($rectangle.X, $rectangle.Y, $diameter, $diameter, 180, 90)
-  $path.AddArc($rectangle.Right - $diameter, $rectangle.Y, $diameter, $diameter, 270, 90)
-  $path.AddArc($rectangle.Right - $diameter, $rectangle.Bottom - $diameter, $diameter, $diameter, 0, 90)
-  $path.AddArc($rectangle.X, $rectangle.Bottom - $diameter, $diameter, $diameter, 90, 90)
-  $path.CloseFigure()
-  return $path
+if (-not (Test-Path -LiteralPath $svgPath)) {
+  throw "Logo source not found: $svgPath"
 }
 
+New-Item -ItemType Directory -Force -Path $iconDir | Out-Null
+New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+
 try {
-  $bitmap = [System.Drawing.Bitmap]::new(256, 256, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-  $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-  $graphics.Clear([System.Drawing.Color]::Transparent)
+  & npm install --silent --no-save --prefix $workDir "@resvg/resvg-js@2.6.2"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to install the pinned SVG renderer"
+  }
 
-  $background = New-RoundedRectanglePath ([System.Drawing.RectangleF]::new(12, 12, 232, 232)) 52
-  $backgroundBrush = [System.Drawing.Drawing2D.LinearGradientBrush]::new(
-    [System.Drawing.PointF]::new(28, 24),
-    [System.Drawing.PointF]::new(224, 232),
-    [System.Drawing.Color]::FromArgb(255, 28, 58, 72),
-    [System.Drawing.Color]::FromArgb(255, 63, 89, 111)
-  )
-  $graphics.FillPath($backgroundBrush, $background)
-  $graphics.DrawPath([System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(160, 218, 238, 239), 4), $background)
+  $resvgModule = Join-Path $workDir "node_modules\@resvg\resvg-js"
+  & node $renderer $svgPath $workDir $resvgModule ($sizes -join ",")
+  if ($LASTEXITCODE -ne 0) {
+    throw "SVG rendering failed"
+  }
 
-  $sunBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 255, 203, 73))
-  $graphics.FillEllipse($sunBrush, 145, 48, 58, 58)
+  $frames = foreach ($size in $sizes) {
+    $path = Join-Path $workDir ("icon-{0}.png" -f $size)
+    if (-not (Test-Path -LiteralPath $path)) {
+      throw "Missing rendered icon frame: $path"
+    }
+    [pscustomobject]@{
+      Size = $size
+      Bytes = [IO.File]::ReadAllBytes($path)
+    }
+  }
 
-  $cloudBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(255, 224, 242, 245))
-  $graphics.FillEllipse($cloudBrush, 52, 104, 82, 76)
-  $graphics.FillEllipse($cloudBrush, 100, 83, 94, 99)
-  $graphics.FillEllipse($cloudBrush, 150, 111, 58, 68)
-  $cloudBody = New-RoundedRectanglePath ([System.Drawing.RectangleF]::new(51, 132, 158, 57)) 25
-  $graphics.FillPath($cloudBrush, $cloudBody)
-
-  $rainPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(255, 95, 190, 244), 10)
-  $rainPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-  $rainPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-  $graphics.DrawLine($rainPen, 86, 199, 77, 218)
-  $graphics.DrawLine($rainPen, 132, 199, 123, 218)
-  $graphics.DrawLine($rainPen, 178, 199, 169, 218)
-
-  $bitmap.Save($pngPath, [System.Drawing.Imaging.ImageFormat]::Png)
-  $png = [IO.File]::ReadAllBytes($pngPath)
   $stream = [IO.File]::Open($iconPath, [IO.FileMode]::Create, [IO.FileAccess]::Write)
   $writer = [IO.BinaryWriter]::new($stream)
-  $writer.Write([UInt16]0)
-  $writer.Write([UInt16]1)
-  $writer.Write([UInt16]1)
-  $writer.Write([Byte]0)
-  $writer.Write([Byte]0)
-  $writer.Write([Byte]0)
-  $writer.Write([Byte]0)
-  $writer.Write([UInt16]1)
-  $writer.Write([UInt16]32)
-  $writer.Write([UInt32]$png.Length)
-  $writer.Write([UInt32]22)
-  $writer.Write($png)
-  $writer.Dispose()
+  try {
+    $writer.Write([UInt16]0)
+    $writer.Write([UInt16]1)
+    $writer.Write([UInt16]$frames.Count)
+
+    $offset = 6 + (16 * $frames.Count)
+    foreach ($frame in $frames) {
+      $dimension = if ($frame.Size -eq 256) { [Byte]0 } else { [Byte]$frame.Size }
+      $writer.Write($dimension)
+      $writer.Write($dimension)
+      $writer.Write([Byte]0)
+      $writer.Write([Byte]0)
+      $writer.Write([UInt16]1)
+      $writer.Write([UInt16]32)
+      $writer.Write([UInt32]$frame.Bytes.Length)
+      $writer.Write([UInt32]$offset)
+      $offset += $frame.Bytes.Length
+    }
+
+    foreach ($frame in $frames) {
+      $writer.Write($frame.Bytes)
+    }
+  } finally {
+    $writer.Dispose()
+  }
+
+  Copy-Item -LiteralPath (Join-Path $workDir "icon-32.png") -Destination $trayPngPath -Force
+  Copy-Item -LiteralPath (Join-Path $workDir "icon-256.png") -Destination $previewPngPath -Force
 
   Write-Host "Generated $iconPath"
+  Write-Host "Generated $trayPngPath"
+  Write-Host "Generated $previewPngPath"
 } finally {
-  if ($graphics) { $graphics.Dispose() }
-  if ($bitmap) { $bitmap.Dispose() }
-  if (Test-Path -LiteralPath $pngPath) { Remove-Item -LiteralPath $pngPath -Force }
+  $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+  $resolvedWork = [IO.Path]::GetFullPath($workDir)
+  if ($resolvedWork.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase) -and
+      (Test-Path -LiteralPath $resolvedWork)) {
+    Remove-Item -LiteralPath $resolvedWork -Recurse -Force
+  }
 }

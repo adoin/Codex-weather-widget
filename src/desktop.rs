@@ -6,7 +6,11 @@ pub struct DesktopSample {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use std::{mem::size_of, path::PathBuf};
+    use std::{
+        mem::size_of,
+        path::PathBuf,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
     use super::DesktopSample;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -28,11 +32,11 @@ mod platform {
                     GetParent, GetWindowLongPtrW, GetWindowRect, HWND_TOP, IsWindow, SMTO_NORMAL,
                     SPI_GETDESKWALLPAPER, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE,
                     SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetParent,
-                    SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW, WM_ERASEBKGND,
-                    WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_STYLECHANGING, WS_BORDER,
-                    WS_CHILD, WS_DLGFRAME, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
-                    WS_THICKFRAME,
+                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetForegroundWindow,
+                    SetParent, SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW,
+                    WM_ERASEBKGND, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_STYLECHANGING,
+                    WS_BORDER, WS_CHILD, WS_DLGFRAME, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX,
+                    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
                 },
             },
         },
@@ -50,6 +54,7 @@ mod platform {
         | 0x0000_0200 // WS_EX_CLIENTEDGE
         | 0x0002_0000; // WS_EX_STATICEDGE
     const FRAMELESS_SUBCLASS_ID: usize = 0x434F_4445_5857_4447;
+    static DESKTOP_CHILD: AtomicBool = AtomicBool::new(false);
 
     #[derive(Clone, Copy)]
     pub struct NativeDragOrigin {
@@ -67,13 +72,22 @@ mod platform {
         }
     }
 
+    fn frameless_ex_style(current_style: u32, attached: bool) -> u32 {
+        let style = current_style & !FRAME_EX_STYLE_MASK & !WS_EX_NOACTIVATE.0;
+        if attached {
+            style | WS_EX_NOACTIVATE.0
+        } else {
+            style
+        }
+    }
+
     unsafe extern "system" fn frameless_subclass_proc(
         window: HWND,
         message: u32,
         wparam: WPARAM,
         lparam: LPARAM,
         _subclass_id: usize,
-        reference_data: usize,
+        _reference_data: usize,
     ) -> LRESULT {
         unsafe {
             match message {
@@ -83,10 +97,11 @@ mod platform {
                 WM_STYLECHANGING if !lparam.0.is_negative() && lparam.0 != 0 => {
                     let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
                     let style_index = wparam.0 as i32;
+                    let attached = DESKTOP_CHILD.load(Ordering::Acquire);
                     if style_index == GWL_STYLE.0 {
-                        styles.styleNew = frameless_style(styles.styleNew, reference_data != 0);
+                        styles.styleNew = frameless_style(styles.styleNew, attached);
                     } else if style_index == GWL_EXSTYLE.0 {
-                        styles.styleNew &= !FRAME_EX_STYLE_MASK;
+                        styles.styleNew = frameless_ex_style(styles.styleNew, attached);
                     }
                     DefSubclassProc(window, message, wparam, lparam)
                 }
@@ -105,11 +120,12 @@ mod platform {
 
     unsafe fn install_frameless_subclass(window: HWND, attached: bool) {
         unsafe {
+            DESKTOP_CHILD.store(attached, Ordering::Release);
             let _ = SetWindowSubclass(
                 window,
                 Some(frameless_subclass_proc),
                 FRAMELESS_SUBCLASS_ID,
-                usize::from(attached),
+                0,
             );
         }
     }
@@ -175,6 +191,7 @@ mod platform {
 
     unsafe fn suppress_window_chrome(window: HWND, attached: bool) {
         unsafe {
+            DESKTOP_CHILD.store(attached, Ordering::Release);
             install_frameless_subclass(window, attached);
             let current_style = GetWindowLongPtrW(window, GWL_STYLE) as u32;
             let frameless_style = frameless_style(current_style, attached);
@@ -183,7 +200,7 @@ mod platform {
             // ownership update. WS_EX_WINDOWEDGE produces the bright top line
             // and white fragments around the native rounded region.
             let current_ex_style = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
-            let frameless_ex_style = current_ex_style & !FRAME_EX_STYLE_MASK;
+            let frameless_ex_style = frameless_ex_style(current_ex_style, attached);
 
             let style_changed =
                 current_style != frameless_style || current_ex_style != frameless_ex_style;
@@ -318,6 +335,13 @@ mod platform {
             GetParent(window)
                 .is_ok_and(|parent| !parent.0.is_null() && IsWindow(Some(parent)).as_bool())
         }
+    }
+
+    pub fn request_keyboard_focus(frame: &eframe::Frame) -> bool {
+        let Ok(window) = hwnd(frame) else {
+            return false;
+        };
+        unsafe { SetForegroundWindow(window).as_bool() }
     }
 
     pub fn begin_window_drag(frame: &eframe::Frame) -> Option<NativeDragOrigin> {
@@ -498,6 +522,9 @@ mod platform {
     pub fn is_desktop_attached(_frame: &eframe::Frame) -> bool {
         false
     }
+    pub fn request_keyboard_focus(_frame: &eframe::Frame) -> bool {
+        true
+    }
     pub fn begin_window_drag(_frame: &eframe::Frame) -> Option<NativeDragOrigin> {
         None
     }
@@ -519,5 +546,6 @@ mod platform {
 
 pub use platform::{
     NativeDragOrigin, apply_round_region, begin_window_drag, desktop_sample, drag_window_to,
-    has_window_region, is_desktop_attached, set_attached, suppress_native_chrome, wallpaper_path,
+    has_window_region, is_desktop_attached, request_keyboard_focus, set_attached,
+    suppress_native_chrome, wallpaper_path,
 };

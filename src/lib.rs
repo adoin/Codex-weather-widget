@@ -1,6 +1,8 @@
 pub mod autostart;
 pub mod config;
+pub mod credentials;
 pub mod desktop;
+mod generated_weather_icons;
 pub mod i18n;
 pub mod live;
 pub mod model;

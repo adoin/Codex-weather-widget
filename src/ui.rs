@@ -19,7 +19,8 @@ use eframe::egui::{
 use parking_lot::RwLock;
 
 use crate::{
-    config::Config,
+    config::{Config, WeatherIconTheme, WeatherProvider},
+    credentials,
     i18n::{Language, Text, month_name, tr, weekday_name, weekday_short},
     model::{AppCommand, DailyUsage, RateWindow, UsageSnapshot},
     weather::{self, LocationCandidate, WeatherState, condition_label},
@@ -27,6 +28,12 @@ use crate::{
 
 type LocationSearchResult = Result<Vec<LocationCandidate>, String>;
 type DesktopGlassResult = Result<Option<image::RgbaImage>, String>;
+
+struct LocationSearchRequest {
+    query: String,
+    language: Language,
+    services: weather::WeatherServices,
+}
 
 const INK: Color32 = Color32::from_rgb(39, 48, 43);
 const PAPER: Color32 = Color32::from_rgb(246, 243, 234);
@@ -146,6 +153,70 @@ const SCENES: [Scene; 7] = [
     },
 ];
 
+pub fn install_fonts(ctx: &egui::Context) {
+    egui_extras::install_image_loaders(ctx);
+    let candidates = if cfg!(target_os = "windows") {
+        vec![
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\segoeui.ttf",
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/SFNS.ttf",
+        ]
+    } else {
+        vec![
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+    };
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(Path::new(path)) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "calendar-ui".into(),
+                egui::FontData::from_owned(bytes).into(),
+            );
+            fonts
+                .families
+                .entry(FontFamily::Proportional)
+                .or_default()
+                .insert(0, "calendar-ui".into());
+            if cfg!(target_os = "windows")
+                && let Ok(symbols) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf")
+            {
+                fonts.font_data.insert(
+                    "weather-symbols".into(),
+                    egui::FontData::from_owned(symbols).into(),
+                );
+                fonts
+                    .families
+                    .entry(FontFamily::Proportional)
+                    .or_default()
+                    .push("weather-symbols".into());
+            }
+            ctx.set_fonts(fonts);
+            break;
+        }
+    }
+}
+
+fn should_show_text_hint(value: &str, has_focus: bool) -> bool {
+    value.is_empty() && !has_focus
+}
+
+fn should_show_qweather_help(provider: WeatherProvider) -> bool {
+    provider != WeatherProvider::OpenMeteo
+}
+
+fn qweather_help_url(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "https://dev.qweather.com/docs/configuration/project-and-key/",
+        Language::EnUs => "https://dev.qweather.com/en/docs/configuration/project-and-key/",
+    }
+}
+
 pub struct CalendarApp {
     config: Arc<RwLock<Config>>,
     snapshot: Arc<RwLock<UsageSnapshot>>,
@@ -155,9 +226,9 @@ pub struct CalendarApp {
     settings_open: bool,
     stats_open: bool,
     language_popup_requested: bool,
-    configured_fonts: bool,
     quitting: bool,
     initial_show_pending: bool,
+    startup_warmup_frames: u8,
     backgrounds: Vec<Vec<Option<TextureHandle>>>,
     frosted_backgrounds: Vec<Vec<Option<TextureHandle>>>,
     background_palettes: Vec<Vec<Option<TextPalette>>>,
@@ -167,7 +238,10 @@ pub struct CalendarApp {
     desktop_glass_dominant: Option<Color32>,
     desktop_glass_loading: bool,
     location_draft: String,
-    location_search_tx: Sender<(String, Language)>,
+    qweather_api_key_draft: String,
+    qweather_api_key_saved: bool,
+    weather_credentials_status: Option<String>,
+    location_search_tx: Sender<LocationSearchRequest>,
     location_search_rx: Receiver<(String, LocationSearchResult)>,
     location_search_pending: Option<String>,
     location_candidates: Vec<LocationCandidate>,
@@ -189,22 +263,32 @@ impl CalendarApp {
         visible: Arc<AtomicBool>,
     ) -> Self {
         let location_draft = config.read().weather_location.clone();
+        let qweather_api_key_saved = credentials::load_qweather_api_key()
+            .ok()
+            .flatten()
+            .is_some_and(|key| !key.trim().is_empty());
         let last_native_position = {
             let cfg = config.read();
             cfg.window_x
                 .zip(cfg.window_y)
                 .map(|(x, y)| (x.round() as i32, y.round() as i32))
         };
-        let (location_search_tx, location_search_requests) = mpsc::channel::<(String, Language)>();
+        let (location_search_tx, location_search_requests) =
+            mpsc::channel::<LocationSearchRequest>();
         let (location_search_results, location_search_rx) =
             mpsc::channel::<(String, LocationSearchResult)>();
         let (desktop_glass_tx, desktop_glass_rx) = mpsc::channel::<DesktopGlassResult>();
         thread::Builder::new()
             .name("location-search".into())
             .spawn(move || {
-                while let Ok((query, language)) = location_search_requests.recv() {
-                    let result = weather::search_locations(&query, language)
-                        .map_err(|error| error.to_string());
+                while let Ok(request) = location_search_requests.recv() {
+                    let query = request.query;
+                    let result = weather::search_locations_with_services(
+                        &query,
+                        request.language,
+                        &request.services,
+                    )
+                    .map_err(|error| error.to_string());
                     if location_search_results.send((query, result)).is_err() {
                         break;
                     }
@@ -228,9 +312,9 @@ impl CalendarApp {
             settings_open: false,
             stats_open: false,
             language_popup_requested: false,
-            configured_fonts: false,
             quitting: false,
             initial_show_pending: true,
+            startup_warmup_frames: 2,
             backgrounds: (0..SCENES.len())
                 .map(|_| (0..3).map(|_| None).collect())
                 .collect(),
@@ -248,6 +332,9 @@ impl CalendarApp {
             desktop_glass_dominant: None,
             desktop_glass_loading,
             location_draft,
+            qweather_api_key_draft: String::new(),
+            qweather_api_key_saved,
+            weather_credentials_status: None,
             location_search_tx,
             location_search_rx,
             location_search_pending: None,
@@ -259,59 +346,6 @@ impl CalendarApp {
             native_drag_origin: None,
             last_native_position,
             position_save_due: None,
-        }
-    }
-
-    fn install_fonts(&mut self, ctx: &egui::Context) {
-        if self.configured_fonts {
-            return;
-        }
-        self.configured_fonts = true;
-        egui_extras::install_image_loaders(ctx);
-        let candidates = if cfg!(target_os = "windows") {
-            vec![
-                r"C:\Windows\Fonts\msyh.ttc",
-                r"C:\Windows\Fonts\segoeui.ttf",
-            ]
-        } else if cfg!(target_os = "macos") {
-            vec![
-                "/System/Library/Fonts/PingFang.ttc",
-                "/System/Library/Fonts/SFNS.ttf",
-            ]
-        } else {
-            vec![
-                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            ]
-        };
-        for path in candidates {
-            if let Ok(bytes) = std::fs::read(Path::new(path)) {
-                let mut fonts = egui::FontDefinitions::default();
-                fonts.font_data.insert(
-                    "calendar-ui".into(),
-                    egui::FontData::from_owned(bytes).into(),
-                );
-                fonts
-                    .families
-                    .entry(FontFamily::Proportional)
-                    .or_default()
-                    .insert(0, "calendar-ui".into());
-                if cfg!(target_os = "windows")
-                    && let Ok(symbols) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf")
-                {
-                    fonts.font_data.insert(
-                        "weather-symbols".into(),
-                        egui::FontData::from_owned(symbols).into(),
-                    );
-                    fonts
-                        .families
-                        .entry(FontFamily::Proportional)
-                        .or_default()
-                        .push("weather-symbols".into());
-                }
-                ctx.set_fonts(fonts);
-                break;
-            }
         }
     }
 
@@ -457,7 +491,14 @@ impl CalendarApp {
         }
     }
 
-    fn paint_scene(&self, ui: &egui::Ui, rect: Rect, scene_index: usize, frame: &eframe::Frame) {
+    fn paint_scene(
+        &self,
+        ui: &egui::Ui,
+        rect: Rect,
+        scene_index: usize,
+        weather: &WeatherState,
+        frame: &eframe::Frame,
+    ) {
         let painter = ui.painter();
         // Windows already applies an exact native HRGN to the whole swapchain.
         // Drawing another antialiased egui radius leaves the first pixel row at
@@ -473,6 +514,7 @@ impl CalendarApp {
         let background_index = cfg.background % 3;
         let background_opacity = cfg.background_opacity.clamp(0.0, 1.0);
         let reduced = cfg.reduced_motion;
+        let auto_scene = cfg.auto_scene;
         let desktop_glass = cfg.desktop_glass && cfg.desktop_attached;
         drop(cfg);
         if desktop_glass
@@ -512,7 +554,12 @@ impl CalendarApp {
         } else {
             ui.input(|i| i.time) as f32
         };
-        paint_weather_particles(painter, rect, scene_index, time, reduced);
+        let effects = if auto_scene {
+            weather::weather_effects(weather.qweather_icon.as_deref(), weather.weather_code)
+        } else {
+            effects_for_manual_scene(scene_index)
+        };
+        paint_weather_particles(painter, rect, effects, time, reduced);
     }
 
     fn header(
@@ -524,7 +571,10 @@ impl CalendarApp {
         language: Language,
         controls_visibility: f32,
     ) -> Rect {
-        let position_locked = self.config.read().position_locked;
+        let (position_locked, weather_icon_theme) = {
+            let cfg = self.config.read();
+            (cfg.position_locked, cfg.weather_icon_theme)
+        };
         let (header_rect, drag) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), 30.0),
             if position_locked {
@@ -577,6 +627,10 @@ impl CalendarApp {
                 .clicked()
                 {
                     self.settings_open = !self.settings_open;
+                    if self.settings_open {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
+                        let _ = crate::desktop::request_keyboard_focus(frame);
+                    }
                 }
                 let lock_icon = if position_locked {
                     egui::include_image!("../assets/ui-icons/lock.svg")
@@ -603,6 +657,32 @@ impl CalendarApp {
                     (Some(low), Some(high)) => format!("{low:.0}°/{high:.0}°"),
                     _ => scene_label(scene_index, language).to_owned(),
                 };
+                let location = weather
+                    .resolved_location
+                    .as_deref()
+                    .unwrap_or(tr(language, Text::WeatherUnsetTooltip));
+                let mut weather_tooltip = match weather.source {
+                    Some(source) => format!(
+                        "{location}\n{}: {}",
+                        tr(language, Text::WeatherDataBy),
+                        source.label()
+                    ),
+                    None => location.to_owned(),
+                };
+                if let Some(air_quality) = weather.air_quality.as_ref() {
+                    weather_tooltip.push_str(&format!(
+                        "\n{}: AQI {} · {}",
+                        tr(language, Text::AirQuality),
+                        air_quality.aqi_display,
+                        air_quality.category
+                    ));
+                    if let Some(pollutant) = air_quality.primary_pollutant.as_deref() {
+                        weather_tooltip.push_str(&format!(
+                            "\n{}: {pollutant}",
+                            tr(language, Text::PrimaryPollutant)
+                        ));
+                    }
+                }
                 Frame::new()
                     .fill(Color32::from_black_alpha(108))
                     .corner_radius(5)
@@ -612,9 +692,13 @@ impl CalendarApp {
                             ui.spacing_mut().item_spacing.x = 3.0;
                             ui.add(
                                 egui::Image::new(if weather.weather_code.is_some() {
-                                    weather_icon_source(weather.weather_code)
+                                    weather_icon_source(
+                                        weather_icon_theme,
+                                        weather.qweather_icon.as_deref(),
+                                        weather.weather_code,
+                                    )
                                 } else {
-                                    scene_icon_source(scene_index)
+                                    scene_icon_source(weather_icon_theme, scene_index)
                                 })
                                 .fit_to_exact_size(Vec2::splat(20.0)),
                             );
@@ -626,15 +710,38 @@ impl CalendarApp {
                                         .strong(),
                                 )
                                 .sense(Sense::hover()),
-                            )
-                            .on_hover_text(
-                                weather
-                                    .resolved_location
-                                    .as_deref()
-                                    .unwrap_or(tr(language, Text::WeatherUnsetTooltip)),
                             );
+                            if let Some(air_quality) = weather.air_quality.as_ref() {
+                                ui.label(
+                                    RichText::new("·")
+                                        .size(10.0)
+                                        .color(Color32::from_white_alpha(150)),
+                                );
+                                let color = air_quality
+                                    .color
+                                    .map(|[red, green, blue]| Color32::from_rgb(red, green, blue))
+                                    .unwrap_or(Color32::from_rgb(155, 225, 186));
+                                ui.label(
+                                    RichText::new(format!(
+                                        "AQI {} {}",
+                                        air_quality.aqi_display, air_quality.category
+                                    ))
+                                    .size(10.5)
+                                    .color(color)
+                                    .strong(),
+                                );
+                            }
+                            if let Some(source) = weather.source {
+                                ui.label(
+                                    RichText::new(format!("· {}", source.label()))
+                                        .size(9.5)
+                                        .color(Color32::from_white_alpha(205)),
+                                );
+                            }
                         });
-                    });
+                    })
+                    .response
+                    .on_hover_text(weather_tooltip);
             });
         });
         header_rect
@@ -702,6 +809,7 @@ impl CalendarApp {
     fn week_strip(&self, ui: &mut egui::Ui, weather: &WeatherState, language: Language) -> Rect {
         let now = Local::now();
         let today_index = now.weekday().num_days_from_monday() as usize;
+        let weather_icon_theme = self.config.read().weather_icon_theme;
         Frame::new()
             .fill(Color32::from_black_alpha(96))
             .corner_radius(12)
@@ -766,9 +874,13 @@ impl CalendarApp {
                             rect.center_bottom() - Vec2::new(0.0, 12.0),
                             Vec2::splat(22.0),
                         );
-                        egui::Image::new(weather_icon_source(forecast.map(|day| day.weather_code)))
-                            .fit_to_exact_size(icon_rect.size())
-                            .paint_at(ui, icon_rect);
+                        egui::Image::new(weather_icon_source(
+                            weather_icon_theme,
+                            forecast.and_then(|day| day.qweather_icon.as_deref()),
+                            forecast.map(|day| day.weather_code),
+                        ))
+                        .fit_to_exact_size(icon_rect.size())
+                        .paint_at(ui, icon_rect);
                     }
                 });
             })
@@ -1137,6 +1249,8 @@ impl CalendarApp {
             cfg.auto_start,
         );
         let language_before = cfg.language.clone();
+        let weather_service_before = (cfg.weather_provider, cfg.qweather_api_host.clone());
+        let weather_icon_theme_before = cfg.weather_icon_theme;
         ui.label(
             RichText::new(tr(language, Text::Language))
                 .size(11.0)
@@ -1157,6 +1271,148 @@ impl CalendarApp {
                 }
             });
         cfg.language = Some(language.code().to_owned());
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                RichText::new(tr(language, Text::WeatherService))
+                    .size(11.0)
+                    .color(palette.card_muted),
+            );
+            if should_show_qweather_help(cfg.weather_provider)
+                && qweather_help_button(ui, tr(language, Text::QWeatherHelp), palette.card_accent)
+                    .clicked()
+            {
+                ui.ctx()
+                    .open_url(egui::OpenUrl::new_tab(qweather_help_url(language)));
+            }
+        });
+        egui::ComboBox::from_id_salt("weather-provider")
+            .selected_text(match cfg.weather_provider {
+                WeatherProvider::Auto => tr(language, Text::WeatherProviderAuto),
+                WeatherProvider::OpenMeteo => tr(language, Text::WeatherProviderOpenMeteo),
+                WeatherProvider::QWeather => tr(language, Text::WeatherProviderQWeather),
+            })
+            .width(ui.available_width())
+            .popup_style(settings_popup_style(palette))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut cfg.weather_provider,
+                    WeatherProvider::Auto,
+                    tr(language, Text::WeatherProviderAuto),
+                );
+                ui.selectable_value(
+                    &mut cfg.weather_provider,
+                    WeatherProvider::OpenMeteo,
+                    tr(language, Text::WeatherProviderOpenMeteo),
+                );
+                ui.selectable_value(
+                    &mut cfg.weather_provider,
+                    WeatherProvider::QWeather,
+                    tr(language, Text::WeatherProviderQWeather),
+                );
+            });
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(tr(language, Text::WeatherIconTheme))
+                .size(10.0)
+                .color(palette.card_muted),
+        );
+        egui::ComboBox::from_id_salt("weather-icon-theme")
+            .selected_text(match cfg.weather_icon_theme {
+                WeatherIconTheme::Crystal => tr(language, Text::WeatherIconThemeCrystal),
+                WeatherIconTheme::Duotone => tr(language, Text::WeatherIconThemeDuotone),
+                WeatherIconTheme::Neon => tr(language, Text::WeatherIconThemeNeon),
+            })
+            .width(ui.available_width())
+            .popup_style(settings_popup_style(palette))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut cfg.weather_icon_theme,
+                    WeatherIconTheme::Crystal,
+                    tr(language, Text::WeatherIconThemeCrystal),
+                );
+                ui.selectable_value(
+                    &mut cfg.weather_icon_theme,
+                    WeatherIconTheme::Duotone,
+                    tr(language, Text::WeatherIconThemeDuotone),
+                );
+                ui.selectable_value(
+                    &mut cfg.weather_icon_theme,
+                    WeatherIconTheme::Neon,
+                    tr(language, Text::WeatherIconThemeNeon),
+                );
+            });
+        if cfg.weather_provider != WeatherProvider::OpenMeteo {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(tr(language, Text::QWeatherApiHost))
+                    .size(10.0)
+                    .color(palette.card_muted),
+            );
+            let host_id = ui.make_persistent_id("qweather-api-host-input");
+            let host_focused = ui.memory(|memory| memory.has_focus(host_id));
+            let show_host_hint = should_show_text_hint(&cfg.qweather_api_host, host_focused);
+            let mut host_edit = egui::TextEdit::singleline(&mut cfg.qweather_api_host).id(host_id);
+            if show_host_hint {
+                host_edit = host_edit.hint_text(
+                    RichText::new("abc123.qweatherapi.com")
+                        .italics()
+                        .color(palette.card_muted.gamma_multiply(0.58)),
+                );
+            }
+            ui.add_sized([ui.available_width(), 28.0], host_edit);
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(language, Text::QWeatherApiKey))
+                    .size(10.0)
+                    .color(palette.card_muted),
+            );
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [ui.available_width() - 104.0, 28.0],
+                    egui::TextEdit::singleline(&mut self.qweather_api_key_draft).password(true),
+                );
+                let has_key_draft = !self.qweather_api_key_draft.trim().is_empty();
+                if ui
+                    .add_enabled_ui(has_key_draft, |ui| {
+                        ui.add_sized(
+                            [98.0, 28.0],
+                            egui::Button::new(tr(language, Text::SaveApiKey)),
+                        )
+                    })
+                    .inner
+                    .clicked()
+                {
+                    match credentials::save_qweather_api_key(&self.qweather_api_key_draft) {
+                        Ok(()) => {
+                            self.qweather_api_key_saved = true;
+                            self.qweather_api_key_draft.clear();
+                            self.weather_credentials_status =
+                                Some(tr(language, Text::ApiKeySaved).to_owned());
+                        }
+                        Err(error) => {
+                            self.weather_credentials_status =
+                                Some(format!("{}: {error}", tr(language, Text::ApiKeySaveFailed)));
+                        }
+                    }
+                }
+            });
+            ui.label(
+                RichText::new(tr(language, Text::QWeatherSetupHint))
+                    .size(9.5)
+                    .color(palette.card_muted),
+            );
+            if let Some(status) = self.weather_credentials_status.as_deref() {
+                ui.label(RichText::new(status).size(9.5).color(palette.card_accent));
+            } else if self.qweather_api_key_saved {
+                ui.label(
+                    RichText::new(tr(language, Text::ApiKeySaved))
+                        .size(9.5)
+                        .color(palette.card_accent),
+                );
+            }
+        }
         ui.add_space(8.0);
         ui.label(
             RichText::new(tr(language, Text::WeatherAddress))
@@ -1184,7 +1440,22 @@ impl CalendarApp {
                 self.location_search_error = Some(tr(language, Text::SearchMinimum).to_owned());
             } else if self
                 .location_search_tx
-                .send((query.clone(), language))
+                .send(LocationSearchRequest {
+                    query: query.clone(),
+                    language,
+                    services: weather::WeatherServices::new(
+                        cfg.weather_provider,
+                        cfg.qweather_api_host.clone(),
+                        Some(if self.qweather_api_key_draft.trim().is_empty() {
+                            credentials::load_qweather_api_key()
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default()
+                        } else {
+                            self.qweather_api_key_draft.clone()
+                        }),
+                    ),
+                })
                 .is_ok()
             {
                 self.location_search_pending = Some(query);
@@ -1356,8 +1627,15 @@ impl CalendarApp {
             || cfg.weather_display_name != current_cfg.weather_display_name
             || cfg.weather_latitude != current_cfg.weather_latitude
             || cfg.weather_longitude != current_cfg.weather_longitude;
+        let weather_service_changed =
+            weather_service_before != (cfg.weather_provider, cfg.qweather_api_host.clone());
         drop(current_cfg);
-        if before != after || address_changed || language_before != cfg.language {
+        if before != after
+            || address_changed
+            || weather_service_changed
+            || weather_icon_theme_before != cfg.weather_icon_theme
+            || language_before != cfg.language
+        {
             ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(
                 if cfg.always_on_top && !cfg.desktop_attached {
                     WindowLevel::AlwaysOnTop
@@ -1373,15 +1651,28 @@ impl CalendarApp {
 
 impl eframe::App for CalendarApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.install_fonts(ctx);
+        if self.startup_warmup_frames > 0 {
+            self.startup_warmup_frames -= 1;
+            ctx.request_repaint();
+        }
         self.receive_desktop_glass(ctx);
         self.handle_commands(ctx);
-        let attached = self.config.read().desktop_attached;
+        let configured_attached = self.config.read().desktop_attached;
+        // A HWND parented into Explorer's desktop host remains pointer-interactive,
+        // but Windows does not reliably route keyboard focus to its text controls.
+        // While the settings editor is open, temporarily restore the exact same
+        // frameless HWND as a top-level popup. Reattach it after the editor closes.
+        let attached = configured_attached && !self.settings_open;
+        let was_attached = self.native_attached_state == Some(true);
         if (self.native_attached_state != Some(attached)
             || (attached && !crate::desktop::is_desktop_attached(frame)))
             && crate::desktop::set_attached(frame, attached).is_ok()
         {
             self.native_attached_state = Some(attached);
+            if was_attached && !attached && self.settings_open {
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                let _ = crate::desktop::request_keyboard_focus(frame);
+            }
         }
         // Focus changes and WorkerW composition can restore DWM's one-pixel
         // non-client border without changing the HWND or its size. Reassert the
@@ -1415,7 +1706,11 @@ impl eframe::App for CalendarApp {
             }
         }
         let desktop_glass_ready = !self.config.read().desktop_glass || !self.desktop_glass_loading;
-        if self.initial_show_pending && native_ready && desktop_glass_ready {
+        if self.initial_show_pending
+            && self.startup_warmup_frames == 0
+            && native_ready
+            && desktop_glass_ready
+        {
             self.initial_show_pending = false;
             let show = self.visible.load(Ordering::Relaxed);
             ctx.send_viewport_cmd(ViewportCommand::Visible(show));
@@ -1479,7 +1774,7 @@ impl eframe::App for CalendarApp {
                 } else {
                     card
                 };
-                self.paint_scene(ui, scene_paint_rect, scene_index, frame);
+                self.paint_scene(ui, scene_paint_rect, scene_index, &weather, frame);
                 let background_click = ui.interact(
                     Rect::from_min_max(
                         Pos2::new(card.left(), card.top() + 42.0),
@@ -1624,7 +1919,11 @@ impl eframe::App for CalendarApp {
                             ui.add_space(9.0);
                             ui.separator();
                             ui.add_space(9.0);
-                            self.settings(ui, text_palette);
+                            egui::ScrollArea::vertical()
+                                .id_salt("widget-settings-scroll")
+                                .max_height(350.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| self.settings(ui, text_palette));
                         },
                     );
                 });
@@ -2188,29 +2487,24 @@ fn paint_daily_token_chart(
     }
 }
 
-fn weather_icon_source(code: Option<u16>) -> egui::ImageSource<'static> {
-    match code {
-        Some(0) => egui::include_image!("../assets/weather-icons/clear-day.svg"),
-        Some(1 | 2) => egui::include_image!("../assets/weather-icons/partly-cloudy-day.svg"),
-        Some(3) => egui::include_image!("../assets/weather-icons/overcast.svg"),
-        Some(45 | 48) => egui::include_image!("../assets/weather-icons/fog.svg"),
-        Some(51..=67 | 80..=82) => egui::include_image!("../assets/weather-icons/rain.svg"),
-        Some(71..=77 | 85 | 86) => egui::include_image!("../assets/weather-icons/snowflake.svg"),
-        Some(95..=99) => egui::include_image!("../assets/weather-icons/thunderstorms.svg"),
-        _ => egui::include_image!("../assets/weather-icons/not-available.svg"),
-    }
+fn weather_icon_source(
+    theme: WeatherIconTheme,
+    qweather_code: Option<&str>,
+    wmo_code: Option<u16>,
+) -> egui::ImageSource<'static> {
+    crate::generated_weather_icons::weather_icon_source(theme, qweather_code, wmo_code)
 }
 
-fn scene_icon_source(scene_index: usize) -> egui::ImageSource<'static> {
+fn scene_icon_source(theme: WeatherIconTheme, scene_index: usize) -> egui::ImageSource<'static> {
     match scene_index {
-        RAIN_SCENE => weather_icon_source(Some(61)),
-        THUNDER_SCENE => weather_icon_source(Some(95)),
-        SNOW_SCENE => weather_icon_source(Some(71)),
-        CLEAR_SCENE => weather_icon_source(Some(0)),
-        CLOUDY_SCENE => weather_icon_source(Some(2)),
-        OVERCAST_SCENE => weather_icon_source(Some(3)),
-        FOG_SCENE => weather_icon_source(Some(45)),
-        _ => weather_icon_source(None),
+        RAIN_SCENE => weather_icon_source(theme, Some("306"), Some(63)),
+        THUNDER_SCENE => weather_icon_source(theme, Some("302"), Some(95)),
+        SNOW_SCENE => weather_icon_source(theme, Some("401"), Some(73)),
+        CLEAR_SCENE => weather_icon_source(theme, Some("100"), Some(0)),
+        CLOUDY_SCENE => weather_icon_source(theme, Some("101"), Some(2)),
+        OVERCAST_SCENE => weather_icon_source(theme, Some("104"), Some(3)),
+        FOG_SCENE => weather_icon_source(theme, Some("501"), Some(45)),
+        _ => weather_icon_source(theme, Some("999"), None),
     }
 }
 
@@ -2261,30 +2555,45 @@ fn desktop_glass_uv(texture_size: Vec2, sample: crate::desktop::DesktopSample) -
 fn paint_weather_particles(
     painter: &egui::Painter,
     rect: Rect,
-    scene_index: usize,
+    effects: weather::WeatherEffects,
     time: f32,
     reduced_motion: bool,
 ) {
-    match scene_index {
-        RAIN_SCENE => paint_rain_drops(painter, rect, time, reduced_motion),
-        THUNDER_SCENE => {
-            paint_rain_drops(painter, rect, time, reduced_motion);
-            if !reduced_motion {
-                let phase = (time / 9.7).fract();
-                let flash =
-                    lightning_pulse(phase, 0.78, 0.025).max(lightning_pulse(phase, 0.84, 0.014));
-                if flash > 0.0 {
-                    painter.rect_filled(
-                        rect,
-                        CornerRadius::same(WINDOW_CORNER_RADIUS),
-                        Color32::from_rgba_unmultiplied(210, 225, 255, (flash * 72.0) as u8),
-                    );
-                }
-            }
+    if effects.rain > 0 {
+        paint_rain_drops(painter, rect, time, reduced_motion, effects.rain);
+    }
+    if effects.snow > 0 {
+        paint_snow(painter, rect, time, reduced_motion, effects.snow);
+    }
+    if effects.lightning && !reduced_motion {
+        let phase = (time / 9.7).fract();
+        let flash = lightning_pulse(phase, 0.78, 0.025).max(lightning_pulse(phase, 0.84, 0.014));
+        if flash > 0.0 {
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(WINDOW_CORNER_RADIUS),
+                Color32::from_rgba_unmultiplied(210, 225, 255, (flash * 72.0) as u8),
+            );
         }
-        SNOW_SCENE => paint_snow(painter, rect, time, reduced_motion),
-        CLEAR_SCENE | CLOUDY_SCENE | OVERCAST_SCENE | FOG_SCENE => {}
-        _ => {}
+    }
+}
+
+fn effects_for_manual_scene(scene_index: usize) -> weather::WeatherEffects {
+    match scene_index {
+        RAIN_SCENE => weather::WeatherEffects {
+            rain: 2,
+            ..weather::WeatherEffects::default()
+        },
+        THUNDER_SCENE => weather::WeatherEffects {
+            rain: 2,
+            lightning: true,
+            ..weather::WeatherEffects::default()
+        },
+        SNOW_SCENE => weather::WeatherEffects {
+            snow: 2,
+            ..weather::WeatherEffects::default()
+        },
+        _ => weather::WeatherEffects::default(),
     }
 }
 
@@ -2292,9 +2601,19 @@ fn lightning_pulse(phase: f32, center: f32, half_width: f32) -> f32 {
     (1.0 - ((phase - center).abs() / half_width)).clamp(0.0, 1.0)
 }
 
-fn paint_rain_drops(painter: &egui::Painter, rect: Rect, time: f32, reduced_motion: bool) {
+fn paint_rain_drops(
+    painter: &egui::Painter,
+    rect: Rect,
+    time: f32,
+    reduced_motion: bool,
+    intensity: u8,
+) {
     let glass = rect.shrink(4.0);
-    let count = if reduced_motion { 8 } else { 24 };
+    let count = if reduced_motion {
+        [0, 5, 8, 11][intensity.min(3) as usize]
+    } else {
+        [0, 14, 24, 34][intensity.min(3) as usize]
+    };
     for i in 0..count {
         let seed = ((i * 47 + 19) % 101) as f32 / 101.0;
         let seed_b = ((i * 71 + 7) % 97) as f32 / 97.0;
@@ -2404,8 +2723,12 @@ fn paint_rain_drops(painter: &egui::Painter, rect: Rect, time: f32, reduced_moti
     }
 }
 
-fn paint_snow(painter: &egui::Painter, rect: Rect, time: f32, reduced_motion: bool) {
-    let count = if reduced_motion { 13 } else { 42 };
+fn paint_snow(painter: &egui::Painter, rect: Rect, time: f32, reduced_motion: bool, intensity: u8) {
+    let count = if reduced_motion {
+        [0, 8, 13, 18][intensity.min(3) as usize]
+    } else {
+        [0, 24, 42, 58][intensity.min(3) as usize]
+    };
     for i in 0..count {
         let seed = i as f32 * 47.37;
         let depth = 0.35 + (i % 8) as f32 / 11.0;
@@ -2440,6 +2763,26 @@ fn svg_icon_button(
     } else {
         response
     }
+}
+
+fn qweather_help_button(ui: &mut egui::Ui, tooltip: &str, accent: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+    let color = if response.hovered() {
+        accent
+    } else {
+        accent.gamma_multiply(0.78)
+    };
+    let center = rect.center() + Vec2::new(0.0, -0.5);
+    ui.painter()
+        .circle(center, 6.0, Color32::TRANSPARENT, Stroke::new(1.0, color));
+    ui.painter().text(
+        center + Vec2::new(0.0, -0.2),
+        Align2::CENTER_CENTER,
+        "?",
+        FontId::proportional(10.5),
+        color,
+    );
+    response.on_hover_text(tooltip)
 }
 
 fn svg_icon_button_at(
@@ -2981,6 +3324,22 @@ mod quota_tests {
         assert_eq!(format_reset_duration(seconds, Language::ZhCn), "5天16小时");
         assert_eq!(format_reset_duration(seconds, Language::EnUs), "5d 16h");
         assert_eq!(parse_compact_duration("5d 16h"), Some(seconds));
+    }
+
+    #[test]
+    fn text_hint_is_hidden_as_soon_as_the_empty_field_has_focus() {
+        assert!(should_show_text_hint("", false));
+        assert!(!should_show_text_hint("", true));
+        assert!(!should_show_text_hint("saved.example.com", false));
+    }
+
+    #[test]
+    fn qweather_help_is_visible_only_for_providers_that_use_qweather() {
+        assert!(should_show_qweather_help(WeatherProvider::Auto));
+        assert!(should_show_qweather_help(WeatherProvider::QWeather));
+        assert!(!should_show_qweather_help(WeatherProvider::OpenMeteo));
+        assert!(!qweather_help_url(Language::ZhCn).contains("/en/"));
+        assert!(qweather_help_url(Language::EnUs).contains("/en/"));
     }
 
     #[test]
