@@ -111,7 +111,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/panel/toggle
 
 ## 构建与发布
 
-`.github/workflows/ci.yml` 在 Windows/macOS 上执行格式检查、编译和测试。推送与 `Cargo.toml` 版本一致的 `v*` 标签时，`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，通过 Inno Setup 生成 Windows x64 安装程序与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只使用 3 个可复用 Action，并只保留最近 3 次运行记录；正式 Release 文件不受该清理影响。
+GitHub Actions 只在推送与 `Cargo.toml` 版本一致的 `v*` 标签时触发。`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，通过 Inno Setup 生成 Windows x64 安装程序与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只使用 3 个可复用 Action，并在每次运行结束时将整个仓库的 workflow runs 清理到最多 3 个；正式 Release 文件不受该清理影响。普通分支 push 和 pull request 不会触发 Actions。
 
 1.1.0 的发布标签为：
 

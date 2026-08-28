@@ -67,14 +67,24 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
-      - name: Keep the latest three release workflow runs
+      - name: Keep only the latest three repository workflow runs
         if: always()
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
-          $endpoint = "repos/$env:GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=completed&per_page=100"
-          $completedRunIds = @(gh api --paginate $endpoint --jq '.workflow_runs[].id')
-          $completedRunIds | Select-Object -Skip 2 | ForEach-Object {
-            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/actions/runs/$_"
+          $endpoint = "repos/$env:GITHUB_REPOSITORY/actions/runs?per_page=100"
+          $runIds = @(gh api --paginate $endpoint --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id')
+          $keptHistoricalRuns = 0
+
+          foreach ($runId in $runIds) {
+            if ([string]$runId -eq $env:CURRENT_RUN_ID) {
+              continue
+            }
+            if ($keptHistoricalRuns -lt 2) {
+              $keptHistoricalRuns++
+              continue
+            }
+            gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId"
           }
