@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$svgPath = Join-Path $repoRoot "logos\iterations\iteration-1-codex-sun-monogram.svg"
+$svgPath = Join-Path $repoRoot "logos\iterations\corbex-e-x-orbit-final.svg"
 $iconDir = Join-Path $repoRoot "assets\icons"
 $iconPath = Join-Path $iconDir "codex-weather-widget.ico"
 $trayPngPath = Join-Path $iconDir "codex-weather-widget-32.png"
