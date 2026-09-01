@@ -793,13 +793,15 @@ impl CalendarApp {
                     .and_then(|p| Path::new(p).file_name())
                     .and_then(|s| s.to_str())
                     .unwrap_or(tr(language, Text::TodayWork));
-                shadowed_label(
+                let focus_text = format!("{}  {project}", tr(language, Text::FocusPrefix));
+                shadowed_truncated_label(
                     ui,
-                    RichText::new(format!("{}  {project}", tr(language, Text::FocusPrefix)))
-                        .size(11.5),
+                    RichText::new(&focus_text).size(11.5),
                     palette.photo_accent,
                     TextSurface::Photo,
-                );
+                    ui.available_width(),
+                )
+                .on_hover_text(focus_text);
             });
         })
         .response
@@ -3121,6 +3123,24 @@ fn shadowed_label(
     response
 }
 
+fn shadowed_truncated_label(
+    ui: &mut egui::Ui,
+    text: RichText,
+    color: Color32,
+    surface: TextSurface,
+    max_width: f32,
+) -> egui::Response {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        max_width.max(0.0),
+        egui::TextStyle::Body,
+    );
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    paint_shadowed_galley(ui.painter(), rect.min, galley, color, surface);
+    response
+}
+
 #[derive(Clone, Copy)]
 struct TextShadowLayer {
     offset: Vec2,
@@ -3331,6 +3351,29 @@ mod quota_tests {
         assert!(should_show_text_hint("", false));
         assert!(!should_show_text_hint("", true));
         assert!(!should_show_text_hint("saved.example.com", false));
+    }
+
+    #[test]
+    fn truncated_shadowed_label_never_exceeds_its_available_width() {
+        let context = egui::Context::default();
+        let mut rendered_width = 0.0;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            rendered_width = shadowed_truncated_label(
+                ui,
+                RichText::new(
+                    "正在专注  dear-dmit-customer-dmit-proactive-sequence-with-a-long-name",
+                )
+                .size(11.5),
+                Color32::WHITE,
+                TextSurface::Photo,
+                96.0,
+            )
+            .rect
+            .width();
+        });
+        output.textures_delta.clear();
+
+        assert!(rendered_width <= 96.0);
     }
 
     #[test]
