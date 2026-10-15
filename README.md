@@ -109,15 +109,25 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/panel/toggle
 
 `desktopGlass` 控制 Windows 桌面毛玻璃，默认开启且只在 `desktopAttached` 生效。`backgroundOpacity` 控制天气照片覆盖毛玻璃的比例：`1.0` 为完整天气照片，`0.0` 为完整桌面毛玻璃；关闭 `desktopGlass` 后，透明区域直接显示桌面。
 
+## 闪退诊断
+
+从 1.1.3 起，启动后会在配置文件旁的 `logs` 目录写入诊断日志。Windows 路径为 `%APPDATA%\CodexCalendar\logs`。
+
+日志记录版本、进程 ID、UTC 时间、运行时长、实际 OpenGL 设备和版本、窗口显示与设置状态、桌面附着操作前后，以及每分钟的 UI 存活状态。常规诊断事件不记录 API Key、天气位置或配额请求内容；panic 信息和堆栈可能包含本机文件路径。
+
+每次启动独立建档，保留最近 6 次启动，每次最多两个约 2 MB 的文件。记录同步刷新，便于进程意外终止后检查最后的操作。出现 `session_end` 表示主函数返回；缺少该记录也可能是强制结束进程或关机，不能单独证明闪退。
+
+显卡驱动访问违规不会经过 Rust panic hook。发生闪退时，请保留该次日志和 `%LOCALAPPDATA%\CrashDumps` 下对应时间的 `.dmp`（如果 Windows 已启用转储）。GitHub Release 同时提供与安装程序匹配的 `.pdb` 调试符号，以便分析原生调用栈。此版本增加诊断能力，尚未宣称修复偶发闪退。
+
 ## 构建与发布
 
 GitHub Actions 只在推送与 `Cargo.toml` 版本一致的 `v*` 标签时触发。`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，通过 Inno Setup 生成 Windows x64 安装程序与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只使用 3 个可复用 Action，并在每次运行结束时将整个仓库的 workflow runs 清理到最多 3 个；正式 Release 文件不受该清理影响。普通分支 push 和 pull request 不会触发 Actions。
 
-1.1.2 的发布标签为：
+1.1.3 的发布标签为：
 
 ```powershell
-git tag v1.1.2
-git push origin v1.1.2
+git tag v1.1.3
+git push origin v1.1.3
 ```
 
 ## 致谢与许可

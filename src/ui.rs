@@ -252,6 +252,9 @@ pub struct CalendarApp {
     native_drag_origin: Option<crate::desktop::NativeDragOrigin>,
     last_native_position: Option<(i32, i32)>,
     position_save_due: Option<Instant>,
+    diagnostic_state: String,
+    diagnostic_heartbeat: Instant,
+    diagnostic_attach_failure: Option<Instant>,
 }
 
 impl CalendarApp {
@@ -346,11 +349,15 @@ impl CalendarApp {
             native_drag_origin: None,
             last_native_position,
             position_save_due: None,
+            diagnostic_state: String::new(),
+            diagnostic_heartbeat: Instant::now(),
+            diagnostic_attach_failure: None,
         }
     }
 
     fn handle_commands(&mut self, ctx: &egui::Context) {
         while let Ok(command) = self.commands.try_recv() {
+            crate::diagnostics::event(format!("app_command {command:?}"));
             match command {
                 AppCommand::Show => {
                     self.visible.store(true, Ordering::Relaxed);
@@ -471,11 +478,16 @@ impl CalendarApp {
                 Ok(Some(image)) => {
                     self.desktop_glass_dominant = Some(dominant_color(&image));
                     let size = [image.width() as usize, image.height() as usize];
+                    crate::diagnostics::event(format!(
+                        "wallpaper_texture_upload width={} height={}",
+                        size[0], size[1]
+                    ));
                     self.desktop_glass_texture = Some(ctx.load_texture(
                         "desktop-wallpaper-frosted",
                         egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
                         egui::TextureOptions::LINEAR,
                     ));
+                    crate::diagnostics::event("wallpaper_texture_ready");
                     eprintln!(
                         "widget-wallpaper-backdrop status=ready texture={}x{} renderer=glow",
                         size[0], size[1]
@@ -1653,6 +1665,29 @@ impl CalendarApp {
 
 impl eframe::App for CalendarApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let diagnostic_state = {
+            let cfg = self.config.read();
+            let (focused, minimized) =
+                ctx.input(|i| (i.viewport().focused, i.viewport().minimized));
+            format!(
+                "settings={} stats={} visible={} focused={focused:?} minimized={minimized:?} attached_config={} attached_actual={:?} glass={} opacity={} quitting={}",
+                self.settings_open,
+                self.stats_open,
+                self.visible.load(Ordering::Relaxed),
+                cfg.desktop_attached,
+                self.native_attached_state,
+                cfg.desktop_glass,
+                cfg.background_opacity,
+                self.quitting
+            )
+        };
+        let diagnostic_due = self.diagnostic_state != diagnostic_state
+            || self.diagnostic_heartbeat.elapsed() >= Duration::from_secs(60);
+        if diagnostic_due {
+            crate::diagnostics::event(format!("ui_state {diagnostic_state}"));
+            self.diagnostic_state = diagnostic_state;
+            self.diagnostic_heartbeat = Instant::now();
+        }
         if self.startup_warmup_frames > 0 {
             self.startup_warmup_frames -= 1;
             ctx.request_repaint();
@@ -1666,14 +1701,38 @@ impl eframe::App for CalendarApp {
         // frameless HWND as a top-level popup. Reattach it after the editor closes.
         let attached = configured_attached && !self.settings_open;
         let was_attached = self.native_attached_state == Some(true);
-        if (self.native_attached_state != Some(attached)
-            || (attached && !crate::desktop::is_desktop_attached(frame)))
-            && crate::desktop::set_attached(frame, attached).is_ok()
+        if self.native_attached_state != Some(attached)
+            || (attached && !crate::desktop::is_desktop_attached(frame))
         {
-            self.native_attached_state = Some(attached);
-            if was_attached && !attached && self.settings_open {
-                ctx.send_viewport_cmd(ViewportCommand::Focus);
-                let _ = crate::desktop::request_keyboard_focus(frame);
+            let record_attempt = diagnostic_due
+                || self
+                    .diagnostic_attach_failure
+                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(60));
+            if record_attempt {
+                crate::diagnostics::event(format!(
+                    "native_attach_begin desired={attached} previous={:?}",
+                    self.native_attached_state
+                ));
+            }
+            match crate::desktop::set_attached(frame, attached) {
+                Ok(()) => {
+                    self.diagnostic_attach_failure = None;
+                    crate::diagnostics::event(format!(
+                        "native_attach_end desired={attached} result=ok"
+                    ));
+                    self.native_attached_state = Some(attached);
+                    if was_attached && !attached && self.settings_open {
+                        ctx.send_viewport_cmd(ViewportCommand::Focus);
+                        let _ = crate::desktop::request_keyboard_focus(frame);
+                    }
+                }
+                Err(error) if record_attempt => {
+                    self.diagnostic_attach_failure = Some(Instant::now());
+                    crate::diagnostics::event(format!(
+                        "native_attach_end desired={attached} result=error error={error}"
+                    ));
+                }
+                Err(_) => {}
             }
         }
         // Focus changes and WorkerW composition can restore DWM's one-pixel
@@ -1714,6 +1773,7 @@ impl eframe::App for CalendarApp {
             && desktop_glass_ready
         {
             self.initial_show_pending = false;
+            crate::diagnostics::event("initial_window_ready");
             let show = self.visible.load(Ordering::Relaxed);
             ctx.send_viewport_cmd(ViewportCommand::Visible(show));
         }

@@ -47,6 +47,8 @@ jobs:
           $sourceDir = (Resolve-Path "target\x86_64-pc-windows-msvc\release").Path
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          # Keep matching symbols for native crash dump analysis.
+          Copy-Item -LiteralPath (Join-Path $sourceDir "codex-calendar.pdb") -Destination (Join-Path $dist "codex-calendar-$env:RELEASE_VERSION.pdb")
           $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
           & $iscc "installer\windows\codex-weather-widget.iss" "/DAppVersion=$env:RELEASE_VERSION" "/DSourceDir=$sourceDir" "/DOutputDir=$dist"
           if ($LASTEXITCODE -ne 0) {

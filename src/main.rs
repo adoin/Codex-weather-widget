@@ -27,6 +27,18 @@ use tray_icon::{
 };
 
 fn main() -> eframe::Result {
+    if let Err(error) = codex_calendar::diagnostics::init() {
+        eprintln!("diagnostics initialization failed: {error}");
+    }
+    let result = run();
+    codex_calendar::diagnostics::event(match &result {
+        Ok(()) => "session_end result=ok".to_owned(),
+        Err(error) => format!("session_end result=error error={error}"),
+    });
+    result
+}
+
+fn run() -> eframe::Result {
     let config = Arc::new(RwLock::new(Config::load()));
     if config.read().auto_start
         && let Err(error) = autostart::configure(true)
@@ -35,6 +47,7 @@ fn main() -> eframe::Result {
     }
     let port = config.read().port;
     if server::notify_existing(port) {
+        codex_calendar::diagnostics::event("existing_instance_notified");
         return Ok(());
     }
 
@@ -54,6 +67,10 @@ fn main() -> eframe::Result {
     let _tray = setup_tray(commands_tx.clone(), language).ok();
 
     let cfg = config.read().clone();
+    codex_calendar::diagnostics::event(format!(
+        "renderer_requested=glow transparent=true attached={} glass={} opacity={}",
+        cfg.desktop_attached, cfg.desktop_glass, cfg.background_opacity
+    ));
     let mut viewport = ViewportBuilder::default()
         .with_title("Codex Calendar")
         .with_inner_size(Vec2::new(cfg.window_width, cfg.window_height))
@@ -89,6 +106,19 @@ fn main() -> eframe::Result {
         "Codex Calendar",
         native_options,
         Box::new(move |creation| {
+            codex_calendar::diagnostics::event("app_creation_enter");
+            if let Some(gl) = creation.gl.as_ref() {
+                use eframe::glow::HasContext;
+                // Creation callback runs with the GL context current.
+                unsafe {
+                    codex_calendar::diagnostics::event(format!(
+                        "gl_ready vendor={:?} renderer={:?} version={:?}",
+                        gl.get_parameter_string(eframe::glow::VENDOR),
+                        gl.get_parameter_string(eframe::glow::RENDERER),
+                        gl.get_parameter_string(eframe::glow::VERSION)
+                    ));
+                }
+            }
             install_fonts(&creation.egui_ctx);
             creation
                 .egui_ctx
