@@ -2,7 +2,7 @@
 use parking_lot::Mutex;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Seek, Write},
     path::PathBuf,
     sync::OnceLock,
     time::Instant,
@@ -25,6 +25,7 @@ impl Recorder {
             self.file.flush()?;
             fs::copy(&self.path, self.path.with_extension("previous.log"))?;
             self.file.set_len(0)?;
+            self.file.rewind()?;
             self.bytes = 0;
         }
         self.file.write_all(text.as_bytes())?;
@@ -61,7 +62,7 @@ pub fn init() -> io::Result<()> {
     ));
     let file = OpenOptions::new()
         .create_new(true)
-        .append(true)
+        .write(true)
         .open(&path)?;
     let _ = RECORDER.set(Mutex::new(Recorder {
         file,
@@ -108,7 +109,7 @@ mod tests {
         let path = dir.path().join("test.log");
         let file = OpenOptions::new()
             .create_new(true)
-            .append(true)
+            .write(true)
             .open(&path)
             .unwrap();
         let mut recorder = Recorder {

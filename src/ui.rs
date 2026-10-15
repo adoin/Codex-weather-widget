@@ -423,7 +423,11 @@ impl CalendarApp {
             if self.backgrounds[scene_index][background_index].is_some() {
                 continue;
             }
+            crate::diagnostics::event(format!(
+                "background_prepare_begin scene={scene_index} image={background_index}"
+            ));
             let Ok(decoded) = image::load_from_memory(bytes) else {
+                crate::diagnostics::event("background_prepare_end result=decode_error");
                 continue;
             };
             let rgba = decoded.to_rgba8();
@@ -447,6 +451,10 @@ impl CalendarApp {
             self.frosted_backgrounds[scene_index][background_index] = Some(frosted_texture);
             self.background_palettes[scene_index][background_index] = Some(palette);
             self.background_dominants[scene_index][background_index] = Some(dominant);
+            crate::diagnostics::event(format!(
+                "background_prepare_end scene={scene_index} image={background_index} width={} height={}",
+                size[0], size[1]
+            ));
         }
     }
 
