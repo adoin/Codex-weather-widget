@@ -49,6 +49,19 @@ pub struct DailyUsage {
     pub tokens: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskThroughput {
+    pub id: String,
+    pub title: String,
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub running: bool,
+    pub output_tokens: u64,
+    pub tokens_per_second: Option<f64>,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSnapshot {
@@ -66,6 +79,8 @@ pub struct UsageSnapshot {
     pub project_usage: Vec<ProjectUsage>,
     #[serde(default)]
     pub recent_daily_usage: Vec<DailyUsage>,
+    #[serde(default)]
+    pub task_throughput: Vec<TaskThroughput>,
     pub reset_in_hours: u32,
     pub reset_label: String,
     pub status_message: Option<String>,
@@ -94,6 +109,7 @@ impl Default for UsageSnapshot {
             sessions_today: 0,
             project_usage: Vec::new(),
             recent_daily_usage: Vec::new(),
+            task_throughput: Vec::new(),
             reset_in_hours: 0,
             reset_label: "—".into(),
             status_message: Some("正在读取 Codex 记录".into()),

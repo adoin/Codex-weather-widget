@@ -90,13 +90,16 @@ impl Default for Config {
             window_x: None,
             window_y: None,
             window_width: 392.0,
-            window_height: 466.0,
+            window_height: 610.0,
         }
     }
 }
 
 impl Config {
     pub fn path() -> PathBuf {
+        if let Some(path) = std::env::var_os("CODEX_CALENDAR_CONFIG") {
+            return PathBuf::from(path);
+        }
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("CodexCalendar")
@@ -109,11 +112,8 @@ impl Config {
             Ok(raw) => (serde_json::from_str(&raw).unwrap_or_default(), false),
             Err(_) => (Self::default(), true),
         };
-        if (config.window_height - 548.0).abs() < f32::EPSILON
-            || (config.window_height - 500.0).abs() < f32::EPSILON
-            || (config.window_height - 450.0).abs() < f32::EPSILON
-        {
-            config.window_height = 466.0;
+        if config.window_height < 610.0 {
+            config.window_height = 610.0;
             needs_save = true;
         }
         if config.language.is_none() {

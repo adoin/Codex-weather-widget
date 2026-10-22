@@ -38,6 +38,11 @@ impl Language {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Text {
+    TaskTps,
+    TaskTpsHint,
+    NoTaskTps,
+    TaskWaiting,
+    TaskIdle,
     Close,
     HideToTray,
     Settings,
@@ -121,6 +126,20 @@ pub enum Text {
 
 pub const fn tr(language: Language, text: Text) -> &'static str {
     match (language, text) {
+        (Language::ZhCn, Text::TaskTps) => "任务实时 TPS",
+        (Language::EnUs, Text::TaskTps) => "Live task TPS",
+        (Language::ZhCn, Text::TaskTpsHint) => {
+            "按会话输出 token 增量估算，随本地日志更新；包含工具等待时间，并非服务端逐 token 流速。30 秒无新增输出时显示等待。"
+        }
+        (Language::EnUs, Text::TaskTpsHint) => {
+            "Estimated from per-session output-token deltas as local logs update. Includes tool waits; not server-side streaming speed. Waits after 30 seconds without output."
+        }
+        (Language::ZhCn, Text::NoTaskTps) => "今日暂无任务记录",
+        (Language::EnUs, Text::NoTaskTps) => "No task activity today",
+        (Language::ZhCn, Text::TaskWaiting) => "等待输出",
+        (Language::EnUs, Text::TaskWaiting) => "Waiting",
+        (Language::ZhCn, Text::TaskIdle) => "空闲",
+        (Language::EnUs, Text::TaskIdle) => "Idle",
         (Language::ZhCn, Text::Close) => "关闭",
         (Language::EnUs, Text::Close) => "Close",
         (Language::ZhCn, Text::HideToTray) => "隐藏到托盘",

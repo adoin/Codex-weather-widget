@@ -301,7 +301,13 @@ mod platform {
                 )?;
             } else {
                 install_frameless_subclass(window, false);
-                SetParent(window, None)?;
+                // A top-level HWND already has no parent; Win32 returns null
+                // on a successful no-op as well as on failure.
+                if let Err(error) = SetParent(window, None)
+                    && GetParent(window).is_ok_and(|parent| !parent.0.is_null())
+                {
+                    return Err(error.into());
+                }
                 let current_style = GetWindowLongPtrW(window, GWL_STYLE) as u32;
                 SetWindowLongPtrW(
                     window,

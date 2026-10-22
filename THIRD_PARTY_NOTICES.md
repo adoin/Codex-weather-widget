@@ -1,5 +1,15 @@
 # Third-party notices
 
+## Patched window backend
+
+`vendor/winit` contains winit 0.30.13 under its Apache-2.0 license (see
+`vendor/winit/LICENSE`). The Windows backend has a narrow local recovery patch:
+failed `ClientToScreen`/`GetWindowRect` queries return an unavailable position,
+and failed size queries return zero while window destruction is processed.
+This prevents Win32 query failures from panicking across native callbacks.
+Other platform implementations are unchanged. The invalid-HWND regression test
+runs with `cargo test -p winit --lib desktop_query_tests`.
+
 ## Background photographs
 
 The JPEG files under `assets/backgrounds/` were downloaded from Unsplash and are

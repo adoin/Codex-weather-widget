@@ -497,7 +497,7 @@ impl CalendarApp {
                     ));
                     crate::diagnostics::event("wallpaper_texture_ready");
                     eprintln!(
-                        "widget-wallpaper-backdrop status=ready texture={}x{} renderer=glow",
+                        "widget-wallpaper-backdrop status=ready texture={}x{}",
                         size[0], size[1]
                     );
                 }
@@ -1241,6 +1241,110 @@ impl CalendarApp {
         .rect
     }
 
+    fn task_tps_panel(
+        &self,
+        ui: &mut egui::Ui,
+        snapshot: &UsageSnapshot,
+        palette: TextPalette,
+        frosted: Option<&TextureHandle>,
+        scene_rect: Rect,
+        language: Language,
+    ) -> Rect {
+        frosted_panel(
+            ui,
+            FrostedContext {
+                texture: frosted,
+                scene_rect,
+                texture_opacity: self.config.read().background_opacity,
+            },
+            palette.glass,
+            14,
+            Margin::same(10),
+            |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(tr(language, Text::TaskTps))
+                            .size(11.0)
+                            .strong()
+                            .color(palette.card_accent),
+                    )
+                    .on_hover_text(tr(language, Text::TaskTpsHint));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("{}", snapshot.task_throughput.len()))
+                                .size(10.0)
+                                .color(palette.card_muted),
+                        );
+                    });
+                });
+                egui::ScrollArea::vertical()
+                    .id_salt("task-tps-list")
+                    .max_height(92.0)
+                    .min_scrolled_height(54.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if snapshot.task_throughput.is_empty() {
+                            ui.label(
+                                RichText::new(tr(language, Text::NoTaskTps))
+                                    .size(10.5)
+                                    .color(palette.card_muted),
+                            );
+                        }
+                        for task in &snapshot.task_throughput {
+                            ui.push_id(&task.id, |ui| {
+                                ui.horizontal(|ui| {
+                                    let width = (ui.available_width() - 94.0).max(20.0);
+                                    ui.add_sized(
+                                        [width, 20.0],
+                                        egui::Label::new(
+                                            RichText::new(task.title.replace(['\n', '\r'], " "))
+                                                .size(10.5)
+                                                .color(palette.card_primary),
+                                        )
+                                        .truncate()
+                                        .halign(Align::Min),
+                                    )
+                                    .on_hover_text(format!(
+                                        "{}\n{}\n{}\n{} output tokens",
+                                        task.title,
+                                        task.model.as_deref().unwrap_or("—"),
+                                        task.cwd.as_deref().unwrap_or("—"),
+                                        task.output_tokens
+                                    ));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let text = task
+                                            .tokens_per_second
+                                            .map(|rate| format!("{rate:.1} TPS"))
+                                            .unwrap_or_else(|| {
+                                                tr(
+                                                    language,
+                                                    if task.running {
+                                                        Text::TaskWaiting
+                                                    } else {
+                                                        Text::TaskIdle
+                                                    },
+                                                )
+                                                .to_owned()
+                                            });
+                                        ui.label(RichText::new(text).size(10.5).monospace().color(
+                                            if task.tokens_per_second.is_some() {
+                                                palette.card_accent
+                                            } else {
+                                                palette.card_muted
+                                            },
+                                        ));
+                                    });
+                                });
+                            });
+                        }
+                    });
+            },
+        )
+        .response
+        .rect
+    }
+
     fn settings(&mut self, ui: &mut egui::Ui, palette: TextPalette) {
         while let Ok((query, result)) = self.location_search_rx.try_recv() {
             if self.location_search_pending.as_deref() != Some(query.as_str()) {
@@ -1917,6 +2021,15 @@ impl eframe::App for CalendarApp {
                             language,
                         ));
                     }
+                    ui.add_space(10.0);
+                    foreground_rects.push(self.task_tps_panel(
+                        ui,
+                        &snapshot,
+                        text_palette,
+                        frosted_background.as_ref(),
+                        card,
+                        language,
+                    ));
                 });
                 let cycle_requested = background_click.clicked()
                     && background_click

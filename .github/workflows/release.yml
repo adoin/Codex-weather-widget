@@ -27,7 +27,7 @@ jobs:
         shell: pwsh
         run: |
           $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
-          $version = $metadata.packages[0].version
+          $version = ($metadata.packages | Where-Object { $_.name -eq "codex-calendar" }).version
           $expectedTag = "v$version"
           if ($env:GITHUB_REF_NAME -ne $expectedTag) {
             throw "Tag '$env:GITHUB_REF_NAME' does not match Cargo version '$version'. Expected '$expectedTag'."
@@ -36,6 +36,9 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets --locked
+
+      - name: Test recoverable Windows coordinate failures
+        run: cargo test -p winit --lib desktop_query_tests --locked
 
       - name: Build Windows x64 release
         run: cargo build --release --locked --target x86_64-pc-windows-msvc

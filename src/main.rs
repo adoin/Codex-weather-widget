@@ -68,13 +68,20 @@ fn run() -> eframe::Result {
 
     let cfg = config.read().clone();
     codex_calendar::diagnostics::event(format!(
-        "renderer_requested=glow transparent=true attached={} glass={} opacity={}",
-        cfg.desktop_attached, cfg.desktop_glass, cfg.background_opacity
+        "renderer_requested={} transparent=true attached={} glass={} opacity={}",
+        if cfg!(target_os = "windows") {
+            "wgpu-dx12-directcomposition"
+        } else {
+            "glow"
+        },
+        cfg.desktop_attached,
+        cfg.desktop_glass,
+        cfg.background_opacity
     ));
     let mut viewport = ViewportBuilder::default()
         .with_title("Codex Calendar")
         .with_inner_size(Vec2::new(cfg.window_width, cfg.window_height))
-        .with_min_inner_size(Vec2::new(350.0, 446.0))
+        .with_min_inner_size(Vec2::new(350.0, 610.0))
         .with_decorations(false)
         .with_resizable(false)
         // Keep the native HWND hidden until the first app frame has removed
@@ -93,20 +100,20 @@ fn run() -> eframe::Result {
     if let (Some(x), Some(y)) = (cfg.window_x, cfg.window_y) {
         viewport = viewport.with_position(Pos2::new(x, y));
     }
-    let native_options = eframe::NativeOptions {
-        viewport,
-        // On this Windows compositor the WGPU surface advertises no usable
-        // alpha mode and silently presents transparent pixels as black. Glow
-        // requests an alpha-capable GL config explicitly.
-        renderer: eframe::Renderer::Glow,
-        ..Default::default()
-    };
+    let native_options = codex_calendar::rendering::native_options(viewport);
 
     eframe::run_native(
         "Codex Calendar",
         native_options,
         Box::new(move |creation| {
             codex_calendar::diagnostics::event("app_creation_enter");
+            if let Some(state) = creation.wgpu_render_state.as_ref() {
+                codex_calendar::diagnostics::event(format!(
+                    "wgpu_ready adapter={:?} format={:?}",
+                    state.adapter.get_info(),
+                    state.target_format
+                ));
+            }
             if let Some(gl) = creation.gl.as_ref() {
                 use eframe::glow::HasContext;
                 // Creation callback runs with the GL context current.
@@ -213,38 +220,47 @@ fn start_usage_worker(config: Arc<RwLock<Config>>, snapshot: Arc<RwLock<UsageSna
             let initial_config = config.read().clone();
             let codex_home = discover_codex_home(initial_config.codex_home.as_deref());
             let mut usage_collector = UsageCollector::new(codex_home.clone());
-            let mut live_plan = None;
-            let mut live_error = None;
-            let mut last_live = Instant::now()
-                .checked_sub(Duration::from_secs(3600))
-                .unwrap_or_else(Instant::now);
+            // Network quota requests must not block local per-task telemetry.
+            let live = Arc::new(RwLock::new((
+                None::<codex_calendar::model::Plan>,
+                None::<String>,
+            )));
+            let live_writer = live.clone();
+            let quota_config = config.clone();
+            thread::Builder::new()
+                .name("quota-refresh".into())
+                .spawn(move || {
+                    loop {
+                        let cfg = quota_config.read().clone();
+                        let language = Language::from_code(cfg.language.as_deref());
+                        match fetch_live_usage(&codex_home) {
+                            Ok(plan) => {
+                                *live_writer.write() = (Some(plan), None);
+                            }
+                            Err(error) => {
+                                let mut state = live_writer.write();
+                                if let Some(plan) = state.0.as_mut() {
+                                    plan.stale = true;
+                                }
+                                state.1 = Some(format!(
+                                    "{}: {error}",
+                                    tr(language, Text::LiveQuotaUnavailable)
+                                ));
+                            }
+                        }
+                        thread::sleep(Duration::from_millis(cfg.live_usage_ms.max(10_000)));
+                    }
+                })
+                .expect("spawn quota worker");
             loop {
                 let cfg = config.read().clone();
-                let language = Language::from_code(cfg.language.as_deref());
-                if last_live.elapsed() >= Duration::from_millis(cfg.live_usage_ms.max(10_000)) {
-                    match fetch_live_usage(&codex_home) {
-                        Ok(plan) => {
-                            live_plan = Some(plan);
-                            live_error = None;
-                        }
-                        Err(error) => {
-                            if let Some(plan) = live_plan.as_mut() {
-                                plan.stale = true;
-                            }
-                            live_error = Some(format!(
-                                "{}: {error}",
-                                tr(language, Text::LiveQuotaUnavailable)
-                            ));
-                        }
-                    }
-                    last_live = Instant::now();
-                }
+                let (live_plan, live_error) = live.read().clone();
                 let mut next = usage_collector.collect(cfg.daily_budget_tokens, live_plan.clone());
                 if next.status_message.is_none() {
                     next.status_message.clone_from(&live_error);
                 }
                 *snapshot.write() = next;
-                thread::sleep(Duration::from_millis(cfg.refresh_ms.max(1_000)));
+                thread::sleep(Duration::from_secs(1));
             }
         })
         .expect("spawn usage worker");

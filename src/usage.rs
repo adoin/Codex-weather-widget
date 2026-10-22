@@ -14,13 +14,14 @@ use walkdir::WalkDir;
 
 use crate::{
     live::{account_metadata, humanize_until},
-    model::{DailyUsage, Meter, Plan, ProjectUsage, RateWindow, UsageSnapshot},
+    model::{DailyUsage, Meter, Plan, ProjectUsage, RateWindow, TaskThroughput, UsageSnapshot},
+    task_rates::TaskActivity,
 };
 
 const STATS_DAYS: u64 = 7;
 const CACHE_RETENTION_DAYS: u64 = STATS_DAYS + 2;
 const TAIL_INITIAL_BYTES: u64 = 1024 * 1024;
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct DayBucket {
@@ -33,6 +34,8 @@ struct DayBucket {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ParsedSession {
+    #[serde(default)]
+    activity: TaskActivity,
     started_day: Option<NaiveDate>,
     provider: Option<String>,
     model: Option<String>,
@@ -115,6 +118,9 @@ fn apply_record(session: &mut ParsedSession, record: &Value) {
     let timestamp = parse_time(record.get("timestamp").or_else(|| payload.get("timestamp")));
 
     if record.get("type").and_then(Value::as_str) == Some("session_meta") {
+        if let Some(id) = payload.get("id").and_then(Value::as_str) {
+            session.activity.id = id.to_owned();
+        }
         let is_subagent = payload.pointer("/source/subagent").is_some()
             || payload.get("thread_source").and_then(Value::as_str) == Some("subagent");
         if is_subagent && session.subagent_created_at.is_none() {
@@ -135,6 +141,19 @@ fn apply_record(session: &mut ParsedSession, record: &Value) {
         return;
     }
 
+    if record.get("type").and_then(Value::as_str) == Some("turn_context") {
+        if let Some(model) = payload.get("model").and_then(Value::as_str) {
+            session.model = Some(model.to_owned());
+        }
+    }
+    if record.get("type").and_then(Value::as_str) == Some("event_msg")
+        && let Some(at) = timestamp
+        && session
+            .subagent_created_at
+            .is_none_or(|created| at > created + chrono::Duration::seconds(2))
+    {
+        session.activity.observe(payload, at);
+    }
     if payload.get("type").and_then(Value::as_str) != Some("token_count") {
         return;
     }
@@ -207,7 +226,10 @@ fn parse_session_incremental(
             break;
         }
         let complete_line = line.ends_with('\n');
-        let relevant = line.contains("\"token_count\"") || line.contains("\"session_meta\"");
+        let relevant = line.contains("\"event_msg\"")
+            || line.contains("\"token_count\"")
+            || line.contains("\"session_meta\"")
+            || line.contains("\"turn_context\"");
         match relevant
             .then(|| serde_json::from_str::<Value>(&line))
             .transpose()
@@ -397,20 +419,6 @@ struct PersistedUsageCache {
     entries: HashMap<String, CachedSession>,
 }
 
-#[derive(Debug, Deserialize)]
-struct LegacyCachedSession {
-    offset: u64,
-    modified_millis: u64,
-    session: ParsedSession,
-}
-
-#[derive(Debug, Deserialize)]
-struct LegacyUsageCache {
-    version: u32,
-    codex_home: String,
-    entries: HashMap<String, LegacyCachedSession>,
-}
-
 pub struct UsageCollector {
     codex_home: PathBuf,
     cache_path: PathBuf,
@@ -423,13 +431,8 @@ impl UsageCollector {
             .or_else(dirs::cache_dir)
             .unwrap_or_else(|| codex_home.clone())
             .join("CodexCalendar");
-        let cache_path = cache_dir.join("usage-cache-v2.json");
-        let legacy_path = cache_dir.join("usage-cache-v1.json");
-        let mut collector = Self::with_cache_path(codex_home, cache_path);
-        if collector.cache.entries.is_empty() {
-            collector.migrate_legacy_cache(&legacy_path);
-        }
-        collector
+        let cache_path = cache_dir.join("usage-cache-v3.json");
+        Self::with_cache_path(codex_home, cache_path)
     }
 
     fn with_cache_path(codex_home: PathBuf, cache_path: PathBuf) -> Self {
@@ -450,41 +453,6 @@ impl UsageCollector {
             codex_home,
             cache_path,
             cache,
-        }
-    }
-
-    fn migrate_legacy_cache(&mut self, legacy_path: &Path) {
-        let Some(legacy) = fs::read_to_string(legacy_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<LegacyUsageCache>(&raw).ok())
-            .filter(|legacy| legacy.version == 1 && legacy.codex_home == self.cache.codex_home)
-        else {
-            return;
-        };
-
-        for (path, mut cached) in legacy.entries {
-            prune_session_window(&mut cached.session);
-            let key = session_key(Path::new(&path));
-            let replacement = CachedSession {
-                path,
-                offset: cached.offset,
-                // v1 did not store the observed length separately. Treat the
-                // committed offset as that length so any tail is read once.
-                file_len: cached.offset,
-                modified_millis: cached.modified_millis,
-                session: cached.session,
-            };
-            let should_replace = self
-                .cache
-                .entries
-                .get(&key)
-                .is_none_or(|current| replacement.modified_millis > current.modified_millis);
-            if should_replace {
-                self.cache.entries.insert(key, replacement);
-            }
-        }
-        if !self.cache.entries.is_empty() {
-            self.save_cache();
         }
     }
 
@@ -593,6 +561,74 @@ impl UsageCollector {
         let sessions = self.sessions();
         collect_usage_from_sessions(&self.codex_home, daily_budget, live_plan, sessions)
     }
+}
+
+fn task_throughput(
+    codex_home: &Path,
+    sessions: &[ParsedSession],
+    now: DateTime<Utc>,
+) -> Vec<TaskThroughput> {
+    let mut titles = HashMap::new();
+    if let Ok(file) = File::open(codex_home.join("session_index.jsonl")) {
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if let Ok(value) = serde_json::from_str::<Value>(&line)
+                && let (Some(id), Some(title)) = (
+                    value.get("id").and_then(Value::as_str),
+                    value.get("thread_name").and_then(Value::as_str),
+                )
+            {
+                titles.insert(id.to_owned(), title.to_owned());
+            }
+        }
+    }
+    let mut tasks: Vec<_> = sessions
+        .iter()
+        .filter_map(|session| {
+            let activity = &session.activity;
+            let updated = activity.updated_at?;
+            if activity.id.is_empty() || local_day(updated) != local_day(now) {
+                return None;
+            }
+            let running = activity.running && (now - updated).num_seconds() < 15 * 60;
+            let title = titles.get(&activity.id).cloned().unwrap_or_else(|| {
+                let project = session
+                    .cwd
+                    .as_deref()
+                    .and_then(|p| Path::new(p).file_name())
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("Codex");
+                format!(
+                    "{project} · {}",
+                    activity
+                        .id
+                        .chars()
+                        .rev()
+                        .take(8)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>()
+                )
+            });
+            Some(TaskThroughput {
+                id: activity.id.clone(),
+                title,
+                model: session.model.clone(),
+                cwd: session.cwd.clone(),
+                running,
+                output_tokens: activity.output_tokens,
+                tokens_per_second: if running { activity.tps(now) } else { None },
+                updated_at: updated.to_rfc3339(),
+            })
+        })
+        .collect();
+    tasks.sort_by(|a, b| {
+        b.running
+            .cmp(&a.running)
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    tasks
 }
 
 fn window_label(minutes: Option<u64>) -> String {
@@ -822,6 +858,7 @@ fn collect_usage_from_sessions(
         sessions_today,
         project_usage,
         recent_daily_usage,
+        task_throughput: task_throughput(codex_home, &sessions, Utc::now()),
         reset_in_hours: (minutes_to_reset / 60) as u32,
         reset_label: if minutes_to_reset >= 60 {
             format!("{}h", minutes_to_reset / 60)
@@ -840,6 +877,42 @@ fn collect_usage_from_sessions(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn task_rows_keep_sessions_distinct_and_load_names_from_index() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("session_index.jsonl"), "{\"id\":\"a\",\"thread_name\":\"First task\"}\n{\"id\":\"b\",\"thread_name\":\"Second task\"}\n").unwrap();
+        let now = Utc::now();
+        let mut sessions = Vec::new();
+        for (id, output) in [("a", 100), ("b", 40)] {
+            let mut session = ParsedSession::default();
+            apply_record(
+                &mut session,
+                &serde_json::json!({"type":"session_meta","timestamp":(now-chrono::Duration::seconds(5)).to_rfc3339(),"payload":{"id":id,"cwd":"same-project"}}),
+            );
+            apply_record(
+                &mut session,
+                &serde_json::json!({"type":"event_msg","timestamp":(now-chrono::Duration::seconds(4)).to_rfc3339(),"payload":{"type":"task_started"}}),
+            );
+            apply_record(
+                &mut session,
+                &serde_json::json!({"type":"event_msg","timestamp":(now-chrono::Duration::seconds(2)).to_rfc3339(),"payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":output,"total_tokens":999999},"last_token_usage":{"output_tokens":output}}}}),
+            );
+            sessions.push(session);
+        }
+        let rows = task_throughput(temp.path(), &sessions, now);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].title, "First task");
+        assert_eq!(rows[0].tokens_per_second, Some(50.0));
+        assert_eq!(rows[1].tokens_per_second, Some(20.0));
+        sessions[0]
+            .activity
+            .observe(&serde_json::json!({"type":"task_complete"}), now);
+        let rows = task_throughput(temp.path(), &sessions, now);
+        assert_eq!(rows[0].id, "b");
+        assert!(!rows[1].running);
+        assert_eq!(rows[1].tokens_per_second, None);
+    }
 
     #[test]
     fn aggregates_token_deltas_instead_of_cumulative_totals() {

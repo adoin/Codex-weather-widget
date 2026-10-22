@@ -119,15 +119,25 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/panel/toggle
 
 显卡驱动访问违规不会经过 Rust panic hook。发生闪退时，请保留该次日志和 `%LOCALAPPDATA%\CrashDumps` 下对应时间的 `.dmp`（如果 Windows 已启用转储）。GitHub Release 同时提供与安装程序匹配的 `.pdb` 调试符号，以便分析原生调用栈。此版本增加诊断能力，尚未宣称修复偶发闪退。
 
+## 1.1.4 稳定性与任务 TPS
+
+Windows 使用 DirectX 12 + DirectComposition 渲染，保留透明背景，同时避开已确认多次崩溃的 Intel OpenGL 驱动路径；不会自动回退到 OpenGL。窗口坐标暂时无法查询时返回不可用状态，不再直接 panic。
+
+主界面新增按会话分列的“任务实时 TPS”，显示今日有活动的任务，运行中的任务优先；过长名称省略并可悬停查看。列表内部滚动，不随任务数量继续撑高窗口。TPS 是本地日志中的**输出 token 增量 / 事件间隔**的近期估算，包含工具等待时间，不是服务端逐 token 的瞬时生成速度。输入与缓存输入 token 不计入；日志未更新时无法产生新的速率。30 秒没有新输出显示等待，已结束的任务显示空闲。采集约每秒检查一次，并与网络配额请求分离。
+
+本版会重建一次 v3 用量缓存，并将旧窗口高度扩展到 610 像素，为 TPS 列表预留空间。诊断日志继续保留实际使用的后端和设备信息；长期偶发故障仍需在实际使用中确认是否消失。
+
+开发或复现问题时，可通过 `CODEX_CALENDAR_CONFIG` 指定独立配置文件（包括独立端口和 `codexHome`），日志仍写在该配置文件旁的 `logs` 中。
+
 ## 构建与发布
 
 GitHub Actions 只在推送与 `Cargo.toml` 版本一致的 `v*` 标签时触发。`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，通过 Inno Setup 生成 Windows x64 安装程序与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只使用 3 个可复用 Action，并在每次运行结束时将整个仓库的 workflow runs 清理到最多 3 个；正式 Release 文件不受该清理影响。普通分支 push 和 pull request 不会触发 Actions。
 
-1.1.3 的发布标签为：
+1.1.4 的发布标签为：
 
 ```powershell
-git tag v1.1.3
-git push origin v1.1.3
+git tag v1.1.4
+git push origin v1.1.4
 ```
 
 ## 致谢与许可
