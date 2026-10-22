@@ -111,6 +111,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/panel/toggle
 
 ## 闪退诊断
 
+升级安装时，安装器会先通过本地控制接口请求挂件正常退出；若旧实例无响应，则由 Windows Restart Manager 对待替换的可执行文件执行强制关闭。安装日志会自动保留，避免把“窗口已消失”误认为“进程已退出”。
+
 从 1.1.3 起，启动后会在配置文件旁的 `logs` 目录写入诊断日志。Windows 路径为 `%APPDATA%\CodexCalendar\logs`。
 
 日志记录版本、进程 ID、UTC 时间、运行时长、实际 OpenGL 设备和版本、窗口显示与设置状态、桌面附着操作前后，以及每分钟的 UI 存活状态。常规诊断事件不记录 API Key、天气位置或配额请求内容；panic 信息和堆栈可能包含本机文件路径。
