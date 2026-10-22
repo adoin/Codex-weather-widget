@@ -113,6 +113,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8787/panel/toggle
 
 升级安装时，安装器会先通过本地控制接口请求挂件正常退出；若旧实例无响应，则由 Windows Restart Manager 对待替换的可执行文件执行强制关闭。安装日志会自动保留，避免把“窗口已消失”误认为“进程已退出”。
 
+1.1.5 修正了任务 TPS 状态文字的中文字体回退：数字 TPS 继续使用等宽字体，“等待输出”和“空闲”可回退到系统中文字体，避免显示成方块。
+
 从 1.1.3 起，启动后会在配置文件旁的 `logs` 目录写入诊断日志。Windows 路径为 `%APPDATA%\CodexCalendar\logs`。
 
 日志记录版本、进程 ID、UTC 时间、运行时长、实际 OpenGL 设备和版本、窗口显示与设置状态、桌面附着操作前后，以及每分钟的 UI 存活状态。常规诊断事件不记录 API Key、天气位置或配额请求内容；panic 信息和堆栈可能包含本机文件路径。
@@ -135,11 +137,11 @@ Windows 使用 DirectX 12 + DirectComposition 渲染，保留透明背景，同�
 
 GitHub Actions 只在推送与 `Cargo.toml` 版本一致的 `v*` 标签时触发。`.github/workflows/release.yml` 会在 Windows runner 上完成测试和 release 构建，通过 Inno Setup 生成 Windows x64 安装程序与 SHA-256 校验文件，并自动发布到 GitHub Release。Release 工作流只使用 3 个可复用 Action，并在每次运行结束时将整个仓库的 workflow runs 清理到最多 3 个；正式 Release 文件不受该清理影响。普通分支 push 和 pull request 不会触发 Actions。
 
-1.1.4 的发布标签为：
+1.1.5 的发布标签为：
 
 ```powershell
-git tag v1.1.4
-git push origin v1.1.4
+git tag v1.1.5
+git push origin v1.1.5
 ```
 
 ## 致谢与许可

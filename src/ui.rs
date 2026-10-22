@@ -183,6 +183,13 @@ pub fn install_fonts(ctx: &egui::Context) {
                 .entry(FontFamily::Proportional)
                 .or_default()
                 .insert(0, "calendar-ui".into());
+            // Keep Latin TPS values monospaced, but allow Chinese status text
+            // such as 等待输出 / 空闲 to fall back to the system UI font.
+            fonts
+                .families
+                .entry(FontFamily::Monospace)
+                .or_default()
+                .push("calendar-ui".into());
             if cfg!(target_os = "windows")
                 && let Ok(symbols) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf")
             {
@@ -3499,6 +3506,37 @@ fn compact_number(value: u64) -> String {
 #[cfg(test)]
 mod quota_tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn monospace_task_statuses_have_chinese_glyphs() {
+        if !Path::new(r"C:\Windows\Fonts\msyh.ttc").exists() {
+            eprintln!("Chinese system font unavailable on this test host");
+            return;
+        }
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.ctx().fonts_mut(|fonts| {
+                let font = egui::FontId::monospace(10.5);
+                for text in [
+                    "25.8 TPS",
+                    tr(Language::ZhCn, Text::TaskWaiting),
+                    tr(Language::ZhCn, Text::TaskIdle),
+                ] {
+                    // Check actual glyph metrics: the family's replacement
+                    // face can also contain valid ASCII glyphs.
+                    for character in text.chars() {
+                        assert!(
+                            fonts.glyph_width(&font, character) > 0.0,
+                            "missing task status glyph: {character} in {text}"
+                        );
+                    }
+                }
+            });
+        });
+        output.textures_delta.clear();
+    }
 
     fn window(minutes: u64, label: &str) -> RateWindow {
         RateWindow {
